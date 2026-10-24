@@ -1,34 +1,15 @@
 {
   "wallpaper": "",
-  "sites": [
-    {
-      "key": "site1",
-      "name": "接口1-替换成你的",
-      "type": 3,
-      "api": "https://接口1域名/api.php/provide/vod/?ac=list",
-      "searchable": 1,
-      "quickSearch": 1,
-      "filterable": 1
-    },
-    {
-      "key": "site2",
-      "name": "接口2-替换成你的",
-      "type": 3,
-      "api": "https://接口2域名/api.php/provide/vod/?ac=list",
-      "searchable": 1,
-      "quickSearch": 1,
-      "filterable": 1
-    },
-    {
-      "key": "site3",
-      "name": "接口3-替换成你的",
-      "type": 3,
-      "api": "https://接口3域名/api.php/provide/vod/?ac=list",
-      "searchable": 1,
-      "quickSearch": 1,
-      "filterable": 1
-    }
+  "sites": [],
+  "flags": [
+    "qq",
+    "iqiyi",
+    "qiyi",
+    "youku",
+    "sohu",
+    "letv",
+    "mgtj",
+    "bilibili"
   ],
-  "flags": ["qq", "iqiyi", "qiyi", "youku", "sohu", "letv", "mgtj", "bilibili"],
   "ads": []
 }
