@@ -48,7 +48,31 @@ def log(m):
     print(m, flush=True)
 
 
+def norm_url(u):
+    """中文域名转 punycode、路径中文转百分号编码, 供 urllib 使用"""
+    try:
+        p = urllib.parse.urlsplit(u)
+    except Exception:
+        return u
+    host = p.hostname or ''
+    try:
+        if host and not host.isascii():
+            host = host.encode('idna').decode()
+    except Exception:
+        pass
+    netloc = host
+    if p.port:
+        netloc = '%s:%d' % (host, p.port)
+    try:
+        path = urllib.parse.quote(p.path or '/', safe='/:')
+        query = urllib.parse.quote(p.query, safe='=&?%+')
+    except Exception:
+        path, query = p.path, p.query
+    return urllib.parse.urlunsplit((p.scheme, netloc, path, query, p.fragment))
+
+
 def http_get(url, timeout, max_bytes=None):
+    url = norm_url(url)
     req = urllib.request.Request(url, headers=UA)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = r.read(max_bytes) if max_bytes else r.read()
@@ -59,7 +83,28 @@ def fetch_json(url, timeout):
     st, data = http_get(url, timeout)
     if st != 200:
         raise RuntimeError('HTTP %s' % st)
-    return json.loads(data.decode('utf-8-sig', 'ignore'))
+    # 伪装成图片的配置: JPEG 尾部附加 "干扰头**base64(JSON)"
+    if data[:2] == b'\xff\xd8':
+        idx = data.rfind(b'\xff\xd9')
+        if idx >= 0:
+            tail = data[idx + 2:].decode('utf-8', 'ignore').strip()
+            if '**' in tail:
+                tail = tail.split('**')[-1]
+            tail = re.sub(r'\s+', '', tail)
+            try:
+                data = base64.b64decode(tail + '=' * (-len(tail) % 4))
+            except Exception:
+                pass
+    txt = data.decode('utf-8-sig', 'ignore')
+    try:
+        return json.loads(txt)
+    except Exception:
+        pass
+    # TVBox圈常用宽松JSON: 带//或/* */注释、字符串内换行等, 剥离后再解析
+    stripped = re.sub(r'^\s*//.*$', '', txt, flags=re.M)
+    stripped = re.sub(r'/\*.*?\*/', '', stripped, flags=re.S)
+    stripped = stripped.replace('\r', '').replace('\n', ' ').replace('\t', ' ')
+    return json.loads(stripped)
 
 
 def tv_url(u):
