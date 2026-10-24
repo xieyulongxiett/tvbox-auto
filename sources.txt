@@ -1,0 +1,15 @@
+# TVBox 接口池 —— 每行一个, # 开头为注释
+#
+# 格式1: 手动添加接口 (支持起别名, 用 | 分隔)
+#   https://某接口域名/api.php/provide/vod/?ac=list | 别名
+#
+# 格式2: 订阅别人的配置, 行首加 @ (自动提取其中的苹果CMS型接口, 与手动接口合并去重)
+#   @https://gh-proxy.com/https://raw.githubusercontent.com/某人/某仓库/main/tvbox.json
+#
+# 说明:
+# - 建议池子里放 5~15 个接口, 检测后自动按速度排序写入 tvbox.json
+# - 只管理苹果CMS JSON 型接口 (type 3, 不依赖 jar); 网页源/jar源不自动管理
+# - 接口连续 2 次检测失败才会从 tvbox.json 剔除, 偶发故障不会误杀
+
+
+AI生成
