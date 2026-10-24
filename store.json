@@ -2,7 +2,7 @@
   "storeHouse": [
     {
       "sourceName": "挺好分享多仓",
-      "sourceUrl": "https://ztha.top/TVBox/GYCK.json"
+      "sourceUrl": "http://ztha.top/TVBox/GYCK.json"
     },
     {
       "sourceName": "📛挺好分享",
@@ -19,6 +19,30 @@
     {
       "sourceName": "🚀高天流云",
       "sourceUrl": "https://gh-proxy.com/https://raw.githubusercontent.com/gaotianliuyun/gao/master/js.json"
+    },
+    {
+      "sourceName": "小盒子多仓",
+      "sourceUrl": "http://xhztv.top/dc"
+    },
+    {
+      "sourceName": "🚀小盒子",
+      "sourceUrl": "http://xhztv.top/xhz"
+    },
+    {
+      "sourceName": "😹玄珠",
+      "sourceUrl": "https://jihulab.com/xuanzhuapp/xzys/-/raw/main/xzvip.json"
+    },
+    {
+      "sourceName": "😹动漫城",
+      "sourceUrl": "https://www.yingm.cc/dm/dm.json"
+    },
+    {
+      "sourceName": "🐹dxawi",
+      "sourceUrl": "https://dxawi.github.io/0/0.json"
+    },
+    {
+      "sourceName": "小盒子4K",
+      "sourceUrl": "http://xhztv.top/4k.json"
     },
     {
       "sourceName": "无名聚合",
