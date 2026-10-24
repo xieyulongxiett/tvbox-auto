@@ -1,0 +1,32 @@
+{
+  "storeHouse": [
+    {
+      "sourceName": "挺好分享多仓",
+      "sourceUrl": "https://ztha.top/TVBox/GYCK.json"
+    },
+    {
+      "sourceName": "📛挺好分享",
+      "sourceUrl": "https://ztha.top/TVBox/thdjk.json"
+    },
+    {
+      "sourceName": "🚀小马线路",
+      "sourceUrl": "https://szyyds.cn/tv/x.json"
+    },
+    {
+      "sourceName": "🚀俊佬在线",
+      "sourceUrl": "http://home.jundie.top:81/top98.json"
+    },
+    {
+      "sourceName": "🚀高天流云",
+      "sourceUrl": "https://gh-proxy.com/https://raw.githubusercontent.com/gaotianliuyun/gao/master/js.json"
+    },
+    {
+      "sourceName": "无名聚合",
+      "sourceUrl": "https://6800.kstore.vip/fish.json"
+    },
+    {
+      "sourceName": "qist大而全",
+      "sourceUrl": "https://gh-proxy.com/https://raw.githubusercontent.com/qist/tvbox/master/0821.json"
+    }
+  ]
+}
