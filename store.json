@@ -5,6 +5,10 @@
       "sourceUrl": "https://ztha.top/TVBox/thdjk.json"
     },
     {
+      "sourceName": "无名聚合 97分",
+      "sourceUrl": "https://6800.kstore.vip/fish.json"
+    },
+    {
       "sourceName": "😹动漫城 96分",
       "sourceUrl": "https://www.yingm.cc/dm/dm.json"
     },
@@ -17,10 +21,6 @@
       "sourceUrl": "http://xhztv.top/xhz"
     },
     {
-      "sourceName": "qist大而全 75分",
-      "sourceUrl": "https://gh-proxy.com/https://raw.githubusercontent.com/qist/tvbox/master/0821.json"
-    },
-    {
       "sourceName": "挺好分享多仓",
       "sourceUrl": "http://ztha.top/TVBox/GYCK.json"
     },
@@ -29,28 +29,8 @@
       "sourceUrl": "http://xhztv.top/dc"
     },
     {
-      "sourceName": "🚀俊佬在线 20分",
-      "sourceUrl": "http://home.jundie.top:81/top98.json"
-    },
-    {
-      "sourceName": "😹玄珠 20分",
-      "sourceUrl": "https://jihulab.com/xuanzhuapp/xzys/-/raw/main/xzvip.json"
-    },
-    {
-      "sourceName": "小盒子4K 9分",
-      "sourceUrl": "http://xhztv.top/4k.json"
-    },
-    {
-      "sourceName": "🐹dxawi 6分",
-      "sourceUrl": "https://dxawi.github.io/0/0.json"
-    },
-    {
-      "sourceName": "🚀高天流云 0分",
-      "sourceUrl": "https://gh-proxy.com/https://raw.githubusercontent.com/gaotianliuyun/gao/master/js.json"
-    },
-    {
-      "sourceName": "无名聚合 0分",
-      "sourceUrl": "https://6800.kstore.vip/fish.json"
+      "sourceName": "qist大而全 50分",
+      "sourceUrl": "https://gh-proxy.com/https://raw.githubusercontent.com/qist/tvbox/master/0821.json"
     }
   ]
 }

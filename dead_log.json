@@ -2,34 +2,29 @@
  "apis": {},
  "stores": {
   "http://home.jundie.top:81/top98.json": {
-   "fails": 1,
-   "last_fail": "2026-10-24 17:09",
+   "fails": 2,
+   "last_fail": "2026-10-24 17:11",
    "score": 0.2
   },
   "https://gh-proxy.com/https://raw.githubusercontent.com/gaotianliuyun/gao/master/js.json": {
-   "fails": 1,
-   "last_fail": "2026-10-24 17:09",
+   "fails": 2,
+   "last_fail": "2026-10-24 17:11",
    "score": 0.0
   },
   "https://jihulab.com/xuanzhuapp/xzys/-/raw/main/xzvip.json": {
-   "fails": 1,
-   "last_fail": "2026-10-24 17:09",
+   "fails": 2,
+   "last_fail": "2026-10-24 17:11",
    "score": 0.2
   },
   "https://dxawi.github.io/0/0.json": {
-   "fails": 1,
-   "last_fail": "2026-10-24 17:09",
+   "fails": 2,
+   "last_fail": "2026-10-24 17:11",
    "score": 0.06
   },
   "http://xhztv.top/4k.json": {
-   "fails": 1,
-   "last_fail": "2026-10-24 17:09",
+   "fails": 2,
+   "last_fail": "2026-10-24 17:11",
    "score": 0.09
-  },
-  "https://6800.kstore.vip/fish.json": {
-   "fails": 1,
-   "last_fail": "2026-10-24 17:09",
-   "score": 0.0
   }
  }
 }
