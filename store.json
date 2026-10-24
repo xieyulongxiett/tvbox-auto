@@ -1,6 +1,10 @@
 {
   "storeHouse": [
     {
+      "sourceName": "我的直播",
+      "sourceUrl": "https://gh-proxy.com/https://raw.githubusercontent.com/xieyulongxiett/tvbox-auto/main/live.json"
+    },
+    {
       "sourceName": "📛挺好分享 100分",
       "sourceUrl": "https://ztha.top/TVBox/thdjk.json"
     },
@@ -9,12 +13,16 @@
       "sourceUrl": "https://6800.kstore.vip/fish.json"
     },
     {
+      "sourceName": "🚀小马线路 97分",
+      "sourceUrl": "https://szyyds.cn/tv/x.json"
+    },
+    {
       "sourceName": "😹动漫城 96分",
       "sourceUrl": "https://www.yingm.cc/dm/dm.json"
     },
     {
-      "sourceName": "🚀小马线路 94分",
-      "sourceUrl": "https://szyyds.cn/tv/x.json"
+      "sourceName": "qist大而全 88分",
+      "sourceUrl": "https://gh-proxy.com/https://raw.githubusercontent.com/qist/tvbox/master/0821.json"
     },
     {
       "sourceName": "🚀小盒子 78分",
@@ -27,10 +35,6 @@
     {
       "sourceName": "小盒子多仓",
       "sourceUrl": "http://xhztv.top/dc"
-    },
-    {
-      "sourceName": "qist大而全 50分",
-      "sourceUrl": "https://gh-proxy.com/https://raw.githubusercontent.com/qist/tvbox/master/0821.json"
     }
   ]
 }

@@ -2,28 +2,28 @@
  "apis": {},
  "stores": {
   "http://home.jundie.top:81/top98.json": {
-   "fails": 2,
-   "last_fail": "2026-10-24 17:11",
+   "fails": 3,
+   "last_fail": "2026-10-24 20:11",
    "score": 0.2
   },
   "https://gh-proxy.com/https://raw.githubusercontent.com/gaotianliuyun/gao/master/js.json": {
-   "fails": 2,
-   "last_fail": "2026-10-24 17:11",
+   "fails": 3,
+   "last_fail": "2026-10-24 20:11",
    "score": 0.0
   },
   "https://jihulab.com/xuanzhuapp/xzys/-/raw/main/xzvip.json": {
-   "fails": 2,
-   "last_fail": "2026-10-24 17:11",
-   "score": 0.2
+   "fails": 3,
+   "last_fail": "2026-10-24 20:11",
+   "score": 0.24
   },
   "https://dxawi.github.io/0/0.json": {
-   "fails": 2,
-   "last_fail": "2026-10-24 17:11",
+   "fails": 3,
+   "last_fail": "2026-10-24 20:11",
    "score": 0.06
   },
   "http://xhztv.top/4k.json": {
-   "fails": 2,
-   "last_fail": "2026-10-24 17:11",
+   "fails": 3,
+   "last_fail": "2026-10-24 20:11",
    "score": 0.09
   }
  }

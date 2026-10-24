@@ -11,5 +11,219 @@
     "mgtj",
     "bilibili"
   ],
-  "ads": []
+  "ads": [],
+  "lives": [
+    {
+      "group": "央视",
+      "channels": [
+        {
+          "name": "CCTV-1 综合",
+          "urls": [
+            "http://74.91.26.218:82/live/cctv1hd.m3u8",
+            "http://69.30.245.50/live/cctv1.m3u8",
+            "http://198.204.240.250:82/live/cctv1.m3u8"
+          ]
+        },
+        {
+          "name": "CCTV-10 科教",
+          "urls": [
+            "https://cdn4.skygo.mn/live/disk1/CCTV-10/HLSv3-FTA/CCTV-10.m3u8",
+            "http://74.91.26.218:82/live/cctv10hd.m3u8"
+          ]
+        },
+        {
+          "name": "CCTV-11 戏曲",
+          "urls": [
+            "http://74.91.26.218:82/live/cctv11hd.m3u8"
+          ]
+        },
+        {
+          "name": "CCTV-12 社会与法",
+          "urls": [
+            "http://74.91.26.218:82/live/cctv12hd.m3u8"
+          ]
+        },
+        {
+          "name": "CCTV-13 新闻",
+          "urls": [
+            "http://74.91.26.218:82/live/cctv13hd.m3u8"
+          ]
+        },
+        {
+          "name": "CCTV-14 少儿",
+          "urls": [
+            "http://74.91.26.218:82/live/cctv14hd.m3u8"
+          ]
+        },
+        {
+          "name": "CCTV-15 音乐",
+          "urls": [
+            "http://74.91.26.218:82/live/cctv15hd.m3u8"
+          ]
+        },
+        {
+          "name": "CCTV-16 奥林匹克",
+          "urls": [
+            "http://74.91.26.218:82/live/cctv16hd.m3u8"
+          ]
+        },
+        {
+          "name": "CCTV-17 农业农村",
+          "urls": [
+            "http://74.91.26.218:82/live/cctv17hd.m3u8"
+          ]
+        },
+        {
+          "name": "CCTV-2 财经",
+          "urls": [
+            "http://74.91.26.218:82/live/cctv2hd.m3u8"
+          ]
+        },
+        {
+          "name": "CCTV-3 综艺",
+          "urls": [
+            "http://74.91.26.218:82/live/cctv3hd.m3u8"
+          ]
+        },
+        {
+          "name": "CCTV-4 中文国际",
+          "urls": [
+            "http://74.91.26.218:82/live/cctv4hd.m3u8"
+          ]
+        },
+        {
+          "name": "CCTV-4K 超高清",
+          "urls": [
+            "http://198.204.240.250:82/live/cctv4k.m3u8"
+          ]
+        },
+        {
+          "name": "CCTV-6 电影",
+          "urls": [
+            "http://69.30.245.50/live/cctv6.m3u8",
+            "http://198.204.240.250:82/live/cctv6.m3u8"
+          ]
+        },
+        {
+          "name": "CCTV-7 国防军事",
+          "urls": [
+            "http://74.91.26.218:82/live/cctv7hd.m3u8"
+          ]
+        },
+        {
+          "name": "CCTV-8 电视剧",
+          "urls": [
+            "http://74.91.26.218:82/live/cctv8hd.m3u8"
+          ]
+        },
+        {
+          "name": "CCTV-9 纪录",
+          "urls": [
+            "https://xykt-fix.github.io/Y77.m3u8"
+          ]
+        }
+      ]
+    },
+    {
+      "group": "卫视",
+      "channels": [
+        {
+          "name": "东方卫视",
+          "urls": [
+            "http://bp-resource-dfl.bestv.cn/155/3/video.m3u8",
+            "http://bp-resource-dfl.bestv.cn/148/3/video.m3u8"
+          ]
+        },
+        {
+          "name": "安徽卫视",
+          "urls": [
+            "https://restream.pdtvhd.com/memfs/c1cd2ed0-3b2b-4c25-af98-a7fb0b1eb130.m3u8"
+          ]
+        },
+        {
+          "name": "新疆卫视",
+          "urls": [
+            "http://120.70.60.179:9901/tsfile/live/1006_1.m3u8?authid=0&key=txiptv&playlive=1",
+            "http://218.84.35.38:3000/m3u8/live/tctv-2/index.m3u8",
+            "http://110.153.180.106:55555/out_2/index.m3u8"
+          ]
+        },
+        {
+          "name": "河北卫视",
+          "urls": [
+            "https://event.pull.hebtv.com/live/live101.m3u8"
+          ]
+        },
+        {
+          "name": "浙江卫视",
+          "urls": [
+            "https://ali-m-l.cztv.com/channels/lantian/channel10/1080p.m3u8"
+          ]
+        },
+        {
+          "name": "海南卫视",
+          "urls": [
+            "http://nn.7x9d.cn/地方台8563/海南.php?id=hnws"
+          ]
+        },
+        {
+          "name": "湖南卫视",
+          "urls": [
+            "http://hlsal-ldvt.qing.mgtv.com/nn_live/nn_x64/dWlwPTEyNy4wLjAuMSZ1aWQ9cWluZy1jbXMmbm5fdGltZXpvbmU9OCZjZG5leF9pZD1hbF9obHNfbGR2dCZ1dWlkPTliODY4NmU5ZTM2YzYwMmMmZT02OTE0NjA0JnY9MSZpZD1ITldTWkdTVCZzPTcwN2RiYTc2YzJjNmJmMTQ4MmUyZGYzOWU2NWM3YWFi/HNWSZGST.m3u8",
+            "http://8.138.7.223/tv/api.php?id=hnws4k"
+          ]
+        },
+        {
+          "name": "西藏卫视",
+          "urls": [
+            "https://pili-live-hls-zdzz-tv.zzxwcm.cn/zdzz-tv/nqzh.m3u8",
+            "http://php.jdshipin.com:8880/xztv.php?id=zy"
+          ]
+        }
+      ]
+    },
+    {
+      "group": "中国香港",
+      "channels": [
+        {
+          "name": "HOY TV",
+          "urls": [
+            "http://r.jdshipin.com/sFw4S",
+            "http://php.jdshipin.com/TVOD/iptv.php?id=hoytv"
+          ]
+        },
+        {
+          "name": "RTHK 港台电视31",
+          "urls": [
+            "https://rthklive1-lh.akamaihd.net/i/rthk31_1@167495/master.m3u8",
+            "http://php.jdshipin.com:8880/TVOD/iptv.php?id=rthk31",
+            "https://rthktv31-live.akamaized.net/hls/live/2036818/RTHKTV31/master.m3u8"
+          ]
+        },
+        {
+          "name": "凤凰卫视资讯台",
+          "urls": [
+            "http://r.jdshipin.com/0Rp07",
+            "http://43.152.224.209/qctv.fengshows.cn/live/0701pin72.flv"
+          ]
+        },
+        {
+          "name": "明珠台",
+          "urls": [
+            "http://r.jdshipin.com/ZQ4kN",
+            "http://r.jdshipin.com/jUx8K",
+            "http://php.jdshipin.com/TVOD/iptv.php?id=mzt2"
+          ]
+        },
+        {
+          "name": "翡翠台",
+          "urls": [
+            "http://r.jdshipin.com/n90gt",
+            "http://r.jdshipin.com/qrfbg",
+            "http://r.jdshipin.com/thuYX"
+          ]
+        }
+      ]
+    }
+  ]
 }
