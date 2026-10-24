@@ -7,12 +7,15 @@
 #   - 配置本身与其子仓会进入 store.json 多仓清单, 电视端一键换仓
 #   - 配置里的苹果CMS直链接口会被提取、检测、写入 tvbox.json
 #   - 多仓配置(storeHouse/urls)会自动跟进一层子仓, 子仓也进清单
+#   - 支持: 带注释JSON / 图片伪装Base64 / 中文域名
 #
-# 说明: 接口/子仓死了当天自动从清单消失, 活了自动回来; 无需手动维护
+# 说明: 仓或接口死了当天自动从清单消失, 活了自动回来; 无需手动维护
 # 加新仓 = 加一行; 不要的删一行; 第二天自动生效
 
-@https://ztha.top/TVBox/GYCK.json | 挺好分享多仓
+@http://ztha.top/TVBox/GYCK.json | 挺好分享多仓
+@http://xhztv.top/dc | 小盒子多仓
 @http://xhztv.top/4k.json | 小盒子4K
+@http://xhztv.top/xhz | 小盒子单仓
+@http://www.饭太硬.net/tv | 饭太硬
 @https://6800.kstore.vip/fish.json | 无名聚合
 @https://raw.githubusercontent.com/qist/tvbox/master/0821.json | qist大而全
-
