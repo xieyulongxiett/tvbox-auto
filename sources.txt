@@ -1,15 +1,18 @@
 # TVBox 接口池 —— 每行一个, # 开头为注释
 #
-# 格式1: 手动添加接口 (支持起别名, 用 | 分隔)
-#   https://某接口域名/api.php/provide/vod/?ac=list | 别名
+# 格式1: 手动接口行 (苹果CMS直链接口, 会被检测进 tvbox.json)
+#   https://接口域名/api.php/provide/vod/?ac=list | 别名
 #
-# 格式2: 订阅别人的配置, 行首加 @ (自动提取其中的苹果CMS型接口, 与手动接口合并去重)
-#   @https://gh-proxy.com/https://raw.githubusercontent.com/某人/某仓库/main/tvbox.json
+# 格式2: 订阅行 (推荐): @配置地址 | 显示名
+#   - 配置本身与其子仓会进入 store.json 多仓清单, 电视端一键换仓
+#   - 配置里的苹果CMS直链接口会被提取、检测、写入 tvbox.json
+#   - 多仓配置(storeHouse/urls)会自动跟进一层子仓, 子仓也进清单
 #
-# 说明:
-# - 建议池子里放 5~15 个接口, 检测后自动按速度排序写入 tvbox.json
-# - 只管理苹果CMS JSON 型接口 (type 3, 不依赖 jar); 网页源/jar源不自动管理
-# - 接口连续 2 次检测失败才会从 tvbox.json 剔除, 偶发故障不会误杀
+# 说明: 接口/子仓死了当天自动从清单消失, 活了自动回来; 无需手动维护
+# 加新仓 = 加一行; 不要的删一行; 第二天自动生效
 
-
+@https://ztha.top/TVBox/GYCK.json | 挺好分享多仓
+@http://xhztv.top/4k.json | 小盒子4K
+@https://6800.kstore.vip/fish.json | 无名聚合
+@https://raw.githubusercontent.com/qist/tvbox/master/0821.json | qist大而全
 
