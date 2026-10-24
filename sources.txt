@@ -19,3 +19,10 @@
 @http://www.饭太硬.net/tv | 饭太硬
 @https://6800.kstore.vip/fish.json | 无名聚合
 @https://raw.githubusercontent.com/qist/tvbox/master/0821.json | qist大而全
+
+# 直播源上游 (L| 开头): 云端逐条拉流实测, 只收 >=720p 高清线路
+L|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u | iptv-org中国
+L|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/hk.m3u | iptv-org香港
+L|https://raw.githubusercontent.com/suxuang/myIPTV/main/ipv4.m3u | suxuang合集
+
+
