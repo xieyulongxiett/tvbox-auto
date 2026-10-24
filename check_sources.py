@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""TVBox 源自动归集 + 失效检测 + 多仓生成
+"""TVBox 源自动归集 + 失效检测 + 仓体检 + 多仓生成
 
 流程:
   1. 读取 sources.txt (@订阅行 = 别人的配置; 手动行 = 苹果CMS接口)
   2. 归集去重: 提取配置里的苹果CMS JSON直链接口; 多仓配置自动跟进一层子仓
-  3. 逐个检测接口: 连通 -> 分类/数据有效 -> 抽一个视频验证播放地址可达
-  4. 存活接口按速度排序生成 tvbox.json; 订阅配置及子仓存活的形成 store.json 多仓清单
-  5. 结果写入 report.md; 失败计数写入 dead_log.json (连续 FAIL_LIMIT 次失败才剔除, 防误杀)
-  6. --gitee 参数: 把结果同步到 Gitee 仓库 (需环境变量 GITEE_TOKEN / GITEE_REPO)
+  3. 接口检测: 连通 -> 分类/数据有效 -> 抽一个视频验证播放地址可达
+  4. 仓体检: 解析每个仓的全部站点, 逐个测依赖(jar/脚本/接口/网页)可达,
+     算健康分; 低于 STORE_MIN_HEALTH 且连续 STORE_FAIL_LIMIT 轮的仓剔除,
+     存活仓按分数排序写入 store.json (名称带分数)
+  5. 结果写入 report.md; 失败计数写入 dead_log.json (防误杀)
+  6. --gitee 参数: 把结果同步到 Gitee 仓库 (需 GITEE_TOKEN / GITEE_REPO)
 
 电视端两个入口:
-  多仓入口 store.json (推荐): TVBox/影视仓加载后可一键切换各仓
+  多仓入口 store.json (推荐): 按健康分排序的仓清单, 一键换仓
   单仓入口 tvbox.json: 只含自检测的苹果CMS直链接口
 
 用法:
@@ -38,8 +40,11 @@ DEADLOG = os.path.join(HERE, 'dead_log.json')
 
 TIMEOUT_API = 10      # 接口请求超时(秒)
 TIMEOUT_PLAY = 8      # 播放地址抽测超时(秒)
-FAIL_LIMIT = 2        # 连续失败次数达到该值才从配置剔除
-MAX_WORKERS = 8
+TIMEOUT_DEP = 8       # 仓依赖检测超时(秒)
+FAIL_LIMIT = 2        # 接口连续失败次数达到该值才剔除
+STORE_MIN_HEALTH = 0.4   # 仓健康分低于该比例开始计失败
+STORE_FAIL_LIMIT = 2     # 仓连续低于健康线轮数, 达到即从清单剔除
+MAX_WORKERS = 12
 FLAGS = ["qq", "iqiyi", "qiyi", "youku", "sohu", "letv", "mgtj", "bilibili"]
 UA = {'User-Agent': 'Mozilla/5.0'}
 
@@ -153,9 +158,90 @@ def check_one(api):
     return int((time.time() - t0) * 1000)
 
 
+# ---------------- 仓体检 ----------------
+
+def site_deps(cfg):
+    """解析仓内每个站点的依赖URL.
+    返回 (全局jar, [(站点, 依赖URL集合), ...])"""
+    global_jar = str(cfg.get('spider') or '')
+    if global_jar.startswith('http'):
+        global_jar = global_jar.split(';')[0]
+    else:
+        global_jar = ''
+    per = []
+    for s in (cfg.get('sites') or []):
+        deps = set()
+        api = str(s.get('api') or '')
+        jar = str(s.get('jar') or '')
+        ext = s.get('ext')
+        if api.startswith('http'):
+            deps.add(api.split(';')[0])
+        if jar.startswith('http'):
+            deps.add(jar.split(';')[0])
+        if isinstance(ext, str) and ext.startswith('http'):
+            deps.add(ext.split(';')[0])
+        # csp_/相对路径/py脚本站点依赖全局jar
+        if not api.startswith('http') and global_jar:
+            deps.add(global_jar)
+        per.append((s, deps))
+    return global_jar, per
+
+
+def test_dep(url):
+    """单个依赖可达性: HTTP 200 即活"""
+    try:
+        st, _ = http_get(url, TIMEOUT_DEP, max_bytes=2048)
+        return st == 200
+    except Exception:
+        return False
+
+
+def assess_stores(stores):
+    """给每个仓算健康分. stores元素含 name/url/cfg.
+    返回带分数的列表, 每项: name,url,score,alive,total,unknown,jar_ok"""
+    # 1. 汇总所有仓的全部依赖URL, 去重后并发测一遍
+    all_deps = set()
+    parsed = []
+    for st in stores:
+        cfg = st.get('cfg') or {}
+        gjar, per = site_deps(cfg)
+        parsed.append((st, gjar, per))
+        for _, deps in per:
+            all_deps.update(deps)
+    log('仓体检: %d 个仓, 去重后依赖共 %d 个, 并发检测...' % (
+        len(stores), len(all_deps)))
+    dep_ok = {}
+    with ThreadPoolExecutor(MAX_WORKERS) as ex:
+        futs = {ex.submit(test_dep, d): d for d in all_deps}
+        for fu in as_completed(futs):
+            d = futs[fu]
+            dep_ok[d] = fu.result()
+
+    out = []
+    for st, gjar, per in parsed:
+        alive_cnt, total, unknown = 0, 0, 0
+        for _, deps in per:
+            if not deps:
+                unknown += 1
+                continue
+            total += 1
+            if all(dep_ok.get(d) for d in deps):
+                alive_cnt += 1
+        score = (alive_cnt / total) if total else None
+        jar_ok = dep_ok.get(gjar) if gjar else None
+        out.append(dict(st, score=score, alive=alive_cnt, total=total,
+                        unknown=unknown, jar_ok=jar_ok))
+        pct = ('%d%%' % (score * 100)) if score is not None else '未测'
+        log('[仓体检] %-16s 分数%s (站点存活%d/%d, 未测%d)' % (
+            (st.get('name') or '')[:16], pct, alive_cnt, total, unknown))
+    return out
+
+
+# ---------------- 归集 ----------------
+
 def collect():
-    """归集: 返回 (接口池pool, 多仓清单stores).
-    @订阅行: 提取苹果CMS直链接口入池; 配置本身与其子仓(存活)记入 stores.
+    """归集: 返回 (接口池pool, 仓列表stores含cfg).
+    @订阅行: 提取苹果CMS直链接口入池; 配置本身与其子仓记入 stores.
     多仓配置(storeHouse/urls)自动跟进一层子仓."""
     pool = {}
     stores = []
@@ -170,12 +256,12 @@ def collect():
         if key not in pool:
             pool[key] = {'api': api, 'name': name, 'origin': origin}
 
-    def add_store(name, url):
+    def add_store(name, url, cfg):
         if url in seen_store:
             return
         seen_store.add(url)
         stores.append({'name': name or urllib.parse.urlparse(url).netloc,
-                       'url': url})
+                       'url': url, 'cfg': cfg})
 
     def extract_apis(cfg, origin):
         n = 0
@@ -225,7 +311,7 @@ def collect():
             except Exception as e:
                 log('[订阅失败] %s -> %s' % (rest, e))
                 continue
-            add_store(alias, rest)
+            add_store(alias, rest, cfg)
             n = extract_apis(cfg, '订阅')
             subs = sub_entries(cfg)[:SUB_LIMIT]
             nsub = 0
@@ -235,7 +321,7 @@ def collect():
                 except Exception as e:
                     log('[聚合跳过] %s -> %s' % (s2, str(e)[:60]))
                     continue
-                add_store(nm, s2)
+                add_store(nm, s2, cfg2)
                 nsub += extract_apis(cfg2, '聚合')
             log('[订阅] %s 直提%d接口, 跟进%d子仓(接口+%d)' % (
                 rest, n, len(subs), nsub))
@@ -248,26 +334,49 @@ def collect():
     return pool, stores
 
 
-def write_store(stores, alive_count, repo):
-    """生成多仓清单 store.json; 电视端入口, 一键切换各仓"""
+def load_deadlog():
+    """兼容旧版(纯接口dict)与新版({"apis":..,"stores":..})"""
+    if not os.path.exists(DEADLOG):
+        return {}, {}
+    try:
+        with open(DEADLOG, encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        return {}, {}
+    if 'apis' in data or 'stores' in data:
+        return data.get('apis') or {}, data.get('stores') or {}
+    return data, {}
+
+
+def save_deadlog(apis, stores):
+    with open(DEADLOG, 'w', encoding='utf-8') as f:
+        json.dump({'apis': apis, 'stores': stores}, f,
+                  ensure_ascii=False, indent=1)
+
+
+def write_store(scored, alive_count, repo):
+    """生成多仓清单 store.json: 按健康分排序, 名称带分数"""
     entries = []
     if repo and alive_count > 0:
         own = 'https://raw.githubusercontent.com/%s/main/tvbox.json' % repo
         entries.append({'sourceName': '自动优选·直链检测',
                         'sourceUrl': tv_url(own)})
-    for s in stores:
-        entries.append({'sourceName': (s['name'] or '未命名')[:20],
-                        'sourceUrl': tv_url(s['url'])})
+    for s in scored:
+        name = (s.get('name') or '未命名')[:16]
+        if s.get('score') is not None:
+            name = '%s %d分' % (name, round(s['score'] * 100))
+        entries.append({'sourceName': name, 'sourceUrl': tv_url(s['url'])})
     cfg = {'storeHouse': entries}
     with open(STORE, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
-    log('store.json 已生成: %d 个仓' % len(entries))
+    log('store.json 已生成: %d 个仓(已按体检分排序)' % len(entries))
 
 
-def write_report(items, alive, suspect, deadlist, stores, now):
+def write_report(items, alive, suspect, deadlist, scored, now):
     repo = os.environ.get('GITHUB_REPOSITORY', '')
-    lines = ['# TVBox 源检测报告', '', '检测时间: %s (北京时间)' % now, '',
-             '| 状态 | 名称 | 接口 | 延迟 | 说明 |', '|---|---|---|---|---|']
+    lines = ['# TVBox 源检测报告', '', '检测时间: %s (北京时间)' % now, '']
+    lines += ['## 一、直链接口检测 (tvbox.json)', '',
+              '| 状态 | 名称 | 接口 | 延迟 | 说明 |', '|---|---|---|---|---|']
 
     def row(tag, it, ms, note):
         name = (it.get('name') or '未命名')[:24]
@@ -281,15 +390,32 @@ def write_report(items, alive, suspect, deadlist, stores, now):
     for it in deadlist:
         row('剔除', it, None, '连续失败 %d 次: %s' % (it['fails'], it['reason']))
     lines.append('')
-    lines.append('归集总数 %d | 存活 %d | 疑似 %d | 剔除 %d' % (
+    lines.append('接口归集 %d | 存活 %d | 疑似 %d | 剔除 %d' % (
         len(items), len(alive), len(suspect), len(deadlist)))
-    if stores:
-        lines += ['', '## 多仓清单 (store.json, 电视端一键换仓)', '',
-                  '| 仓 | 地址 |', '|---|---|']
-        for s in stores:
-            lines.append('| %s | `%s` |' % (
-                (s['name'] or '未命名')[:20], s['url']))
-        lines += ['', '共 %d 个仓' % len(stores)]
+
+    lines += ['', '## 二、仓体检 (store.json, 按健康分排序)', '',
+              '健康分 = 仓内站点依赖(jar/脚本/接口/网页)可达占比;'
+              '低于 %d%% 连续 %d 轮的仓剔除出清单' % (
+                  STORE_MIN_HEALTH * 100, STORE_FAIL_LIMIT), '',
+              '| 状态 | 仓 | 分数 | 站点存活 | jar | 说明 |',
+              '|---|---|---|---|---|---|']
+    for s in scored:
+        st = s.get('state') or ''
+        score = s.get('score')
+        pct = ('%d%%' % (score * 100)) if score is not None else '未测'
+        site = '%d/%d' % (s.get('alive', 0), s.get('total', 0))
+        if s.get('unknown'):
+            site += ' (+%d未测)' % s['unknown']
+        jar = s.get('jar_ok')
+        jar_txt = '—' if jar is None else ('正常' if jar else '失效')
+        note = s.get('note') or ''
+        lines.append('| %s | %s | %s | %s | %s | %s |' % (
+            st, (s.get('name') or '未命名')[:18], pct, site, jar_txt, note))
+    kept = [s for s in scored if s.get('state') == '保留']
+    lines.append('')
+    lines.append('仓总数 %d | 保留 %d | 剔除 %d' % (
+        len(scored), len(kept), len(scored) - len(kept)))
+
     if repo:
         raw = 'https://raw.githubusercontent.com/%s/main/tvbox.json' % repo
         raws = 'https://raw.githubusercontent.com/%s/main/store.json' % repo
@@ -349,51 +475,79 @@ def main():
         sources = sys.argv[sys.argv.index('--sources') + 1]
     SOURCES = sources
 
+    # ---- 归集 ----
     pool, stores = collect()
     items = list(pool.values())
-    log('归集接口共 %d 个, 仓 %d 个, 开始检测(并发%d)...' % (
-        len(items), len(stores), MAX_WORKERS))
+    log('归集接口共 %d 个, 仓 %d 个' % (len(items), len(stores)))
+
+    # ---- 接口检测 ----
     results = {}
-    with ThreadPoolExecutor(MAX_WORKERS) as ex:
-        futs = {ex.submit(check_one, it['api']): it for it in items}
-        for fu in as_completed(futs):
-            it = futs[fu]
-            try:
-                ms = fu.result()
-                results[it['api']] = {'ok': True, 'ms': ms}
-                log('[存活] %5dms  %s' % (ms, it['api']))
-            except Exception as e:
-                results[it['api']] = {'ok': False, 'err': str(e)[:80]}
-                log('[失败] %s -> %s' % (it['api'], e))
+    if items:
+        log('开始接口检测(并发%d)...' % MAX_WORKERS)
+        with ThreadPoolExecutor(MAX_WORKERS) as ex:
+            futs = {ex.submit(check_one, it['api']): it for it in items}
+            for fu in as_completed(futs):
+                it = futs[fu]
+                try:
+                    ms = fu.result()
+                    results[it['api']] = {'ok': True, 'ms': ms}
+                    log('[存活] %5dms  %s' % (ms, it['api']))
+                except Exception as e:
+                    results[it['api']] = {'ok': False, 'err': str(e)[:80]}
+                    log('[失败] %s -> %s' % (it['api'], e))
 
-    dead = {}
-    if os.path.exists(DEADLOG):
-        try:
-            with open(DEADLOG, encoding='utf-8') as f:
-                dead = json.load(f)
-        except Exception:
-            dead = {}
+    # ---- 仓体检 ----
+    scored = []
+    if stores:
+        scored = assess_stores(stores)
 
+    # ---- 失败计数(防误杀) ----
+    dead_apis, dead_stores = load_deadlog()
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime('%Y-%m-%d %H:%M')
+
     alive, suspect, deadlist = [], [], []
     for it in items:
         api = it['api']
         r = results.get(api, {'ok': False, 'err': '未检测'})
         if r['ok']:
-            dead[api] = {'fails': 0, 'last_ok': now}
+            dead_apis[api] = {'fails': 0, 'last_ok': now}
             alive.append(dict(it, ms=r['ms']))
         else:
-            fails = int(dead.get(api, {}).get('fails', 0)) + 1
-            dead[api] = {'fails': fails, 'last_fail': now, 'reason': r['err']}
+            fails = int(dead_apis.get(api, {}).get('fails', 0)) + 1
+            dead_apis[api] = {'fails': fails, 'last_fail': now, 'reason': r['err']}
             rec = dict(it, fails=fails, reason=r['err'])
             if fails >= FAIL_LIMIT:
                 deadlist.append(rec)
             else:
                 suspect.append(rec)
-    with open(DEADLOG, 'w', encoding='utf-8') as f:
-        json.dump(dead, f, ensure_ascii=False, indent=1)
 
+    for s in scored:
+        url = s['url']
+        score = s.get('score')
+        if score is None:
+            s['state'] = '保留'
+            s['note'] = '依赖不可直测, 保留观察'
+            dead_stores.pop(url, None)
+            continue
+        if score >= STORE_MIN_HEALTH:
+            s['state'] = '保留'
+            dead_stores.pop(url, None)
+        else:
+            fails = int(dead_stores.get(url, {}).get('fails', 0)) + 1
+            dead_stores[url] = {'fails': fails, 'last_fail': now,
+                                'score': round(score, 2)}
+            if fails >= STORE_FAIL_LIMIT:
+                s['state'] = '剔除'
+                s['note'] = '健康分 %d%%, 连续 %d 轮低于 %d%%' % (
+                    score * 100, fails, STORE_MIN_HEALTH * 100)
+            else:
+                s['state'] = '保留'
+                s['note'] = '健康分 %d%% 偏低, 观察(第%d轮)' % (
+                    score * 100, fails)
+    save_deadlog(dead_apis, dead_stores)
+
+    # ---- 生成配置 ----
     alive.sort(key=lambda x: x['ms'])
     sites = []
     for i, it in enumerate(alive, 1):
@@ -406,8 +560,12 @@ def main():
         json.dump(cfg, f, ensure_ascii=False, indent=2)
     log('tvbox.json 已生成: %d 个存活接口' % len(sites))
 
-    write_store(stores, len(sites), os.environ.get('GITHUB_REPOSITORY', ''))
-    write_report(items, alive, suspect, deadlist, stores, now)
+    kept = [s for s in scored if s.get('state') != '剔除']
+    # 排序: 有分数的按分数降序; 未测的排中间
+    kept.sort(key=lambda s: s['score'] if s.get('score') is not None else 0.6,
+              reverse=True)
+    write_store(kept, len(sites), os.environ.get('GITHUB_REPOSITORY', ''))
+    write_report(items, alive, suspect, deadlist, scored, now)
     log('report.md 已生成')
 
     if '--gitee' in sys.argv:
