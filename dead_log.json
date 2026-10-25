@@ -1,25 +1,23 @@
 {
- "apis": {},
+ "apis": {
+  "https://rose.tvdog.top/51chigua.py": {
+   "fails": 1,
+   "last_fail": "2026-10-25 10:13",
+   "reason": "Expecting value: line 1 column 1 (char 0)"
+  }
+ },
  "stores": {
   "http://home.jundie.top:81/top98.json": {
-   "fails": 5,
-   "last_fail": "2026-10-25 06:20",
-   "score": 0.2
-  },
-  "https://gh-proxy.com/https://raw.githubusercontent.com/gaotianliuyun/gao/master/js.json": {
-   "fails": 5,
-   "last_fail": "2026-10-25 06:20",
+   "last_fail": "2026-10-25 10:13",
    "score": 0.0
   },
-  "https://jihulab.com/xuanzhuapp/xzys/-/raw/main/xzvip.json": {
-   "fails": 5,
-   "last_fail": "2026-10-25 06:20",
-   "score": 0.28
-  },
   "http://xhztv.top/4k.json": {
-   "fails": 5,
-   "last_fail": "2026-10-25 06:20",
-   "score": 0.11
+   "last_fail": "2026-10-25 10:13",
+   "score": 0.13
+  },
+  "http://47.96.82.41:5188/rose/18/xgg.json": {
+   "last_fail": "2026-10-25 10:13",
+   "score": 0.77
   }
  }
 }

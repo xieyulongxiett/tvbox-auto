@@ -19,16 +19,14 @@
         {
           "name": "CCTV-1 综合",
           "urls": [
-            "http://74.91.26.218:82/live/cctv1hd.m3u8",
-            "http://69.30.245.50/live/cctv1.m3u8",
-            "http://198.204.240.250:82/live/cctv1.m3u8"
+            "http://74.91.26.218:82/live/cctv1hd.m3u8"
           ]
         },
         {
           "name": "CCTV-10 科教",
           "urls": [
-            "https://cdn4.skygo.mn/live/disk1/CCTV-10/HLSv3-FTA/CCTV-10.m3u8",
-            "http://74.91.26.218:82/live/cctv10hd.m3u8"
+            "http://74.91.26.218:82/live/cctv10hd.m3u8",
+            "https://cdn4.skygo.mn/live/disk1/CCTV-10/HLSv3-FTA/CCTV-10.m3u8"
           ]
         },
         {
@@ -62,12 +60,6 @@
           ]
         },
         {
-          "name": "CCTV-16 奥林匹克",
-          "urls": [
-            "http://74.91.26.218:82/live/cctv16hd.m3u8"
-          ]
-        },
-        {
           "name": "CCTV-17 农业农村",
           "urls": [
             "http://74.91.26.218:82/live/cctv17hd.m3u8"
@@ -89,12 +81,6 @@
           "name": "CCTV-4 中文国际",
           "urls": [
             "http://74.91.26.218:82/live/cctv4hd.m3u8"
-          ]
-        },
-        {
-          "name": "CCTV-4K 超高清",
-          "urls": [
-            "http://198.204.240.250:82/live/cctv4k.m3u8"
           ]
         },
         {
@@ -130,8 +116,6 @@
         {
           "name": "东方卫视",
           "urls": [
-            "http://bp-resource-dfl.bestv.cn/155/3/video.m3u8",
-            "http://bp-resource-dfl.bestv.cn/148/3/video.m3u8",
             "https://restream.pdtvhd.com/memfs/0b1b95c9-3543-4af9-9fdb-cf45f1602f17.m3u8"
           ]
         },
@@ -144,7 +128,7 @@
         {
           "name": "新疆卫视",
           "urls": [
-            "http://218.84.35.38:3000/m3u8/live/tctv-2/index.m3u8",
+            "http://120.70.60.179:9901/tsfile/live/1006_1.m3u8?authid=0&key=txiptv&playlive=1",
             "http://110.153.180.106:55555/out_3/index.m3u8",
             "http://110.153.180.106:55555/out_2/index.m3u8"
           ]
@@ -211,15 +195,16 @@
           "name": "明珠台",
           "urls": [
             "http://r.jdshipin.com/jUx8K",
-            "http://php.jdshipin.com/TVOD/iptv.php?id=mzt2"
+            "http://php.jdshipin.com/TVOD/iptv.php?id=mzt2",
+            "http://r.jdshipin.com/ZQ4kN"
           ]
         },
         {
           "name": "翡翠台",
           "urls": [
             "http://r.jdshipin.com/n90gt",
-            "http://r.jdshipin.com/GeWKr",
-            "http://r.jdshipin.com/qClQf"
+            "http://r.jdshipin.com/qClQf",
+            "http://r.jdshipin.com/GeWKr"
           ]
         }
       ]
