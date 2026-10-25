@@ -1,4 +1,4 @@
- #!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """TVBox 源自动归集 + 失效检测 + 仓体检 + 高清直播生成
 
@@ -53,8 +53,8 @@ TIMEOUT_DEP = 8       # 仓依赖检测超时(秒)
 TIMEOUT_LIVE = 8      # 直播流拉取超时(秒)
 TIMEOUT_PROBE = 12    # ffmpeg/ffprobe 画质探测超时(秒)
 FAIL_LIMIT = 2        # 接口连续失败次数达到该值才剔除
-STORE_MIN_HEALTH = 0.4   # 仓健康分低于该比例开始计失败
-STORE_FAIL_LIMIT = 2     # 仓连续低于健康线轮数, 达到即从清单剔除
+STORE_MIN_HEALTH = 0.8   # 仓健康分门槛: 用户要求 <80分 不要
+STORE_FAIL_LIMIT = 1     # 一轮即踢(每轮从sources重新归集, 下轮达标自动回来)
 MAX_WORKERS = 12
 FLAGS = ["qq", "iqiyi", "qiyi", "youku", "sohu", "letv", "mgtj", "bilibili"]
 UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -64,8 +64,22 @@ UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
 # ---- 直播参数 ----
 LIVE_MAX_CAND = 8     # 每频道最多实测候选地址数
 LIVE_KEEP = 3         # 每频道保留线路数
-LIVE_MIN_W, LIVE_MIN_H = 1280, 720   # 高清底线: 720p
+LIVE_MIN_W, LIVE_MIN_H = 1280, 720   # 高清底线: 720p(须 ffmpeg 实测确认)
+LIVE_NO_IPV6 = True   # 用户家无 IPv6: 含 IPv6 地址的线路一律不要
+
+# ---- 目录仓发现(自动找点播源) ----
+# D| 开头的行: 目录仓的 resources.json 地址, 自动提取其中 tvbox_config 类的
+# 配置地址作为新仓候选, 体检合格即进清单 —— 点播源自动发现池
+DIR_CATEGORIES = ('tvbox_config',)   # 目录仓里哪些分类算点播配置
+DIR_LIMIT = 30                        # 每个目录仓最多发现新仓数
 LIVE_EPG = 'http://epg.51zmt.top:8000/e.xml'
+
+# ---- 点播深测参数 ----
+SUB_DEPTH = 2          # 多仓子仓递归跟进深度(验到最后一级)
+SUB_TOTAL_LIMIT = 40   # 子仓跟进总量上限
+CMS_DEEP_LIMIT = 15    # 每仓最多深测的CMS接口数(实际调用验证内容)
+API_URL_HINTS = ('api', 'provide', 'vod', '.js', '.json', '.php',
+                 'collect', 'mxpro')
 
 # ffmpeg 探测工具定位(云端apt安装; 本地尝试 imageio_ffmpeg)
 FFPROBE_BIN = shutil.which('ffprobe')
@@ -195,11 +209,127 @@ def check_one(api):
 
 # ---------------- 仓体检 ----------------
 
-def site_deps(cfg):
-    """解析仓内每个站点的依赖URL. 返回 (全局jar, [(站点, 依赖URL集合)])"""
+API_URL_HINTS_LOCAL = ('api', 'provide', 'vod', '.js', '.json', '.php',
+                       'collect', 'mxpro')
+
+
+def extract_api_like_urls(obj, depth=0):
+    """递归提取 ext(dict/list/JSON字符串)里疑似接口的http URL
+    —— 验到最后一级: 内嵌配置里的接口地址也要测"""
+    urls = set()
+    if depth > 3 or obj is None:
+        return urls
+    if isinstance(obj, str):
+        s = obj.strip()
+        if s.startswith('http'):
+            u = s.split(';')[0]
+            low = u.lower()
+            if any(k in low for k in API_URL_HINTS_LOCAL):
+                urls.add(u)
+        elif s.startswith('{') or s.startswith('['):
+            try:
+                urls |= extract_api_like_urls(json.loads(s), depth + 1)
+            except Exception:
+                pass
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            urls |= extract_api_like_urls(v, depth + 1)
+    elif isinstance(obj, list):
+        for v in obj:
+            urls |= extract_api_like_urls(v, depth + 1)
+    return urls
+
+
+def deep_check_cms(api_url):
+    """CMS接口深测: 实际调用验证有真实内容(分类/视频数据)"""
+    try:
+        j = fetch_json(join_api(api_url, 'ac=list'), TIMEOUT_API)
+        return bool(j.get('class') or j.get('list'))
+    except Exception:
+        return False
+
+
+AD_KEYWORDS = re.compile(
+    r'ad[s]?[-_.]?|advert|guangg|promo|banner|tuijian|preload|creative',
+    re.I)
+
+
+def vod_has_ads(play_url):
+    """点播广告检测: 抽测真实播放地址.
+    m3u8: ts片段域名分散或片段名带广告词 -> 判插广告;
+    其他类型(js/flv等)无法静态判定 -> 放行."""
+    try:
+        st, data = http_get(play_url, TIMEOUT_PLAY, max_bytes=65536)
+        if st != 200:
+            return None  # 无法判定(不因网络问题错杀)
+        txt = data.decode('utf-8', 'ignore')
+        if '#EXTM3U' not in txt[:200]:
+            return None
+        ts = re.findall(r'^(https?://\S+\.ts\S*)$', txt, re.M)
+        if not ts:
+            rel = re.findall(r'^(\S+\.ts)\s*$', txt, re.M)
+            if rel:
+                return None  # 相对路径片段: 单一来源, 无域名可判
+            return None
+        if len(ts) >= 4:
+            domains = {}
+            for u in ts:
+                try:
+                    d = urllib.parse.urlsplit(u).netloc
+                except Exception:
+                    d = '?'
+                domains[d] = domains.get(d, 0) + 1
+            main = max(domains.values()) if domains else 0
+            if len(domains) > 1 and main / len(ts) < 0.85:
+                return True  # 片段域名分散: 疑似广告插入
+        if AD_KEYWORDS.search(' '.join(ts[:20])):
+            return True   # 片段名带广告特征
+        return False
+    except Exception:
+        return None
+
+
+def deep_check_cms_vod(api_url):
+    """CMS深测升级: 验证有真实内容 + 抽真实视频测广告.
+    返回 (有内容, 无广告); 广告无法判定时按无广告处理"""
+    try:
+        j = fetch_json(join_api(api_url, 'ac=list'), TIMEOUT_API)
+    except Exception:
+        return False, True
+    vods = j.get('list') or []
+    if not vods:
+        try:
+            j2 = fetch_json(join_api(api_url, 'ac=videolist&pg=1'), TIMEOUT_API)
+            vods = j2.get('list') or []
+        except Exception:
+            vods = []
+    if not (j.get('class') or vods):
+        return False, True   # 没内容
+    # 抽前几个视频测广告
+    checked = 0
+    for v in vods[:3]:
+        play = str(v.get('vod_play_url') or '')
+        m = re.search(r'\$(https?://[^#\s]+)', play)
+        if not m:
+            continue
+        has_ads = vod_has_ads(m.group(1))
+        if has_ads is True:
+            return True, False  # 有内容但插广告
+        checked += 1
+    return True, True
+
+
+def site_deps(cfg, base_url=''):
+    """解析仓内每个站点: 返回 (全局jar, [{site,deps,cms}]).
+    cms = 苹果CMS接口(深测); deps = 其他依赖URL;
+    相对路径jar(./x.jar)拼基目录转绝对地址 — 验到最后一级"""
     global_jar = str(cfg.get('spider') or '')
-    if global_jar.startswith('http'):
-        global_jar = global_jar.split(';')[0]
+    jar_clean = global_jar.split(';')[0]
+    if jar_clean.startswith('http'):
+        global_jar = jar_clean
+    elif jar_clean and base_url and ('.jar' in jar_clean or
+                                    jar_clean.startswith(('./', '../', '/'))):
+        global_jar = urllib.parse.urljoin(base_url, jar_clean)
     else:
         global_jar = ''
     per = []
@@ -208,16 +338,26 @@ def site_deps(cfg):
         api = str(s.get('api') or '')
         jar = str(s.get('jar') or '')
         ext = s.get('ext')
+        cms = None
         if api.startswith('http'):
-            deps.add(api.split(';')[0])
+            u = api.split(';')[0]
+            if s.get('type') == 3 and not u.split('?')[0].rstrip('/').endswith('.js'):
+                cms = u   # CMS接口: 走深测(实际调用验证内容)
+            else:
+                deps.add(u)
         if jar.startswith('http'):
             deps.add(jar.split(';')[0])
         if isinstance(ext, str) and ext.startswith('http'):
-            deps.add(ext.split(';')[0])
+            u = ext.split(';')[0]
+            low = u.lower()
+            if any(k in low for k in API_URL_HINTS_LOCAL):
+                deps.add(u)
+        elif ext is not None:
+            deps |= extract_api_like_urls(ext)
         # csp_/相对路径/py脚本站点依赖全局jar
         if not api.startswith('http') and global_jar:
             deps.add(global_jar)
-        per.append((s, deps))
+        per.append({'site': s, 'deps': deps, 'cms': cms})
     return global_jar, per
 
 
@@ -230,16 +370,16 @@ def test_dep(url):
 
 
 def assess_stores(stores):
-    """给每个仓算健康分"""
+    """给每个仓算健康分(含CMS接口深测: 实际调用验证内容)"""
     all_deps = set()
     parsed = []
     for st in stores:
         cfg = st.get('cfg') or {}
-        gjar, per = site_deps(cfg)
+        gjar, per = site_deps(cfg, st.get('url') or '')
         parsed.append((st, gjar, per))
-        for _, deps in per:
-            all_deps.update(deps)
-    log('仓体检: %d 个仓, 去重后依赖共 %d 个, 并发检测...' % (
+        for e in per:
+            all_deps.update(e['deps'])
+    log('仓体检: %d 个仓, 去重后依赖 %d 个, 并发检测...' % (
         len(stores), len(all_deps)))
     dep_ok = {}
     with ThreadPoolExecutor(MAX_WORKERS) as ex:
@@ -248,10 +388,41 @@ def assess_stores(stores):
             d = futs[fu]
             dep_ok[d] = fu.result()
 
+    # CMS接口深测: 实际调用验证真实内容 + 抽真实视频测广告
+    cms_apis = []
+    for st, gjar, per in parsed:
+        cnt = 0
+        for e in per:
+            if e['cms'] and cnt < CMS_DEEP_LIMIT:
+                if e['cms'] not in cms_apis:
+                    cms_apis.append(e['cms'])
+                cnt += 1
+    cms_ok = {}
+    cms_ad = {}
+    if cms_apis:
+        log('CMS深测: %d 个接口验证内容+抽视频测广告...' % len(cms_apis))
+        with ThreadPoolExecutor(MAX_WORKERS) as ex:
+            futs = {ex.submit(deep_check_cms_vod, a): a for a in cms_apis}
+            for fu in as_completed(futs):
+                a = futs[fu]
+                has_content, no_ads = fu.result()
+                cms_ok[a] = has_content
+                if not no_ads:
+                    cms_ad[a] = True
+
     out = []
     for st, gjar, per in parsed:
-        alive_cnt, total, unknown = 0, 0, 0
-        for _, deps in per:
+        alive_cnt, total, unknown, deep, ad_hits = 0, 0, 0, 0, 0
+        for e in per:
+            if e['cms']:
+                total += 1
+                deep += 1
+                if cms_ok.get(e['cms']):
+                    alive_cnt += 1
+                if cms_ad.get(e['cms']):
+                    ad_hits += 1
+                continue
+            deps = e['deps']
             if not deps:
                 unknown += 1
                 continue
@@ -261,10 +432,13 @@ def assess_stores(stores):
         score = (alive_cnt / total) if total else None
         jar_ok = dep_ok.get(gjar) if gjar else None
         out.append(dict(st, score=score, alive=alive_cnt, total=total,
-                        unknown=unknown, jar_ok=jar_ok))
+                        unknown=unknown, deep=deep, ad_hits=ad_hits,
+                        jar_ok=jar_ok))
         pct = ('%d%%' % (score * 100)) if score is not None else '未测'
-        log('[仓体检] %-16s 分数%s (站点存活%d/%d, 未测%d)' % (
-            (st.get('name') or '')[:16], pct, alive_cnt, total, unknown))
+        ad_txt = ', 广告%d' % ad_hits if ad_hits else ''
+        log('[仓体检] %-16s 分数%s (存活%d/%d含深测%d, 未测%d%s)' % (
+            (st.get('name') or '')[:16], pct, alive_cnt, total, deep,
+            unknown, ad_txt))
     return out
 
 
@@ -368,25 +542,6 @@ def match_channel(raw_name, wl):
     return None
 
 
-def res_hint(name):
-    """从频道名里的画质标签推断分辨率: (w,h) 或 None"""
-    m = re.search(r'\((\d{3,4})[pi]\)', name)
-    if m:
-        h = int(m.group(1))
-        if h >= 2000:
-            return (3840, 2160)
-        return (int(h * 16 / 9), h)
-    if re.search(r'4k|uhd|2160', name, re.I):
-        return (3840, 2160)
-    if re.search(r'蓝光|超高清|1080', name, re.I):
-        return (1920, 1080)
-    if re.search(r'超清', name):
-        return (1920, 1080)
-    if re.search(r'高清|720', name, re.I):
-        return (1280, 720)
-    return None
-
-
 def parse_m3u(text):
     """解析m3u, 返回 [{name,ua,group,url}]"""
     items = []
@@ -443,8 +598,39 @@ def ffprobe_res(url, ua=None):
     return 0, 0
 
 
+def is_ipv6_url(u):
+    """判断URL是否IPv6地址(用户家无IPv6)"""
+    try:
+        host = urllib.parse.urlsplit(u).hostname or ''
+    except Exception:
+        return False
+    return ':' in host
+
+
+def live_has_ads(txt):
+    """启发式广告检测: m3u8媒体清单里ts片段域名分散(主域名占比低)疑插广告
+    只能测静态广告, 播放中动态插入的测不出"""
+    ts_urls = [u for u in re.findall(r'^(https?://\S+)$', txt, re.M)
+               if '.ts' in u.split('?')[0]]
+    if len(ts_urls) < 4:
+        return False
+    domains = {}
+    for u in ts_urls:
+        try:
+            d = urllib.parse.urlsplit(u).netloc
+        except Exception:
+            d = '?'
+        domains[d] = domains.get(d, 0) + 1
+    if len(domains) < 2:
+        return False
+    main_cnt = max(domains.values())
+    return main_cnt / len(ts_urls) < 0.85
+
+
 def probe_live(url, ua=None):
-    """直播线路体检: 返回 dict(ok,w,h,method,ms)"""
+    """直播线路体检: 返回 dict(ok,w,h,method,ms)
+    清晰度以 ffmpeg 实测为准; master声明仅在ffprobe失败时佐证;
+    名字标签一律不作为画质依据(宁缺勿滥)"""
     t0 = time.time()
     headers = dict(UA)
     if ua:
@@ -459,6 +645,10 @@ def probe_live(url, ua=None):
     head = data[:200].decode('utf-8', 'ignore')
     if '#EXTM3U' in head:
         txt = data.decode('utf-8', 'ignore')
+        # 广告启发式: ts域名分散拒收
+        if live_has_ads(txt):
+            return {'ok': False, 'w': 0, 'h': 0, 'method': 'ads', 'ms': ms}
+        master_res = None
         if '#EXT-X-STREAM-INF' in txt:
             best = (0, 0)
             for m in re.finditer(r'RESOLUTION=(\d+)x(\d+)', txt):
@@ -466,11 +656,14 @@ def probe_live(url, ua=None):
                 if w * h > best[0] * best[1]:
                     best = (w, h)
             if best[0]:
-                return {'ok': True, 'w': best[0], 'h': best[1],
-                        'method': 'master', 'ms': ms}
+                master_res = best
+        # ffmpeg 实测复核(优先); master声明仅佐证
         w, h = ffprobe_res(url, ua)
         if w:
             return {'ok': True, 'w': w, 'h': h, 'method': 'ffmpeg', 'ms': ms}
+        if master_res:
+            return {'ok': True, 'w': master_res[0], 'h': master_res[1],
+                    'method': 'master', 'ms': ms}
         return {'ok': True, 'w': 0, 'h': 0, 'method': '', 'ms': ms}
     # 非m3u8文本(可能是flv/ts/php转发的流)
     w, h = ffprobe_res(url, ua)
@@ -503,19 +696,24 @@ def collect_live(wl):
             txt = data.decode('utf-8-sig', 'ignore')
             items = parse_m3u(txt)
             matched = 0
+            v6 = 0
             for it in items:
                 e = match_channel(it['name'], wl)
                 if not e:
                     continue
                 matched += 1
+                if LIVE_NO_IPV6 and is_ipv6_url(it['url']):
+                    v6 += 1
+                    continue
                 cands.setdefault(e['name'], {'entry': e, 'urls': {}})
                 if it['url'] not in cands[e['name']]['urls']:
                     cands[e['name']]['urls'][it['url']] = {
                         'ua': it.get('ua'), 'raw': it['name']}
             up_stats.append({'url': u, 'name': alias, 'ok': True,
                              'total': len(items), 'matched': matched})
-            log('[直播上游] %s %d条, 命中白名单 %d' % (
-                alias or u, len(items), matched))
+            log('[直播上游] %s %d条, 命中%d%s' % (
+                alias or u, len(items), matched,
+                ' (跳过IPv6 %d条)' % v6 if v6 else ''))
         except Exception as e:
             up_stats.append({'url': u, 'name': alias, 'ok': False,
                              'err': str(e)[:60]})
@@ -543,19 +741,16 @@ def collect_live(wl):
             if k2 != key or not r['ok']:
                 continue
             w, h, method = r['w'], r['h'], r['method']
-            if not w:  # 实测不出 -> 用上游名字里的画质标签兜底
-                hint = res_hint(raw or '')
-                if hint and hint[1] >= LIVE_MIN_H:
-                    w, h, method = hint[0], hint[1], 'hint'
-                else:
-                    continue
+            # 清晰度必须实测: 实测不出分辨率的线路一律不收(名字标签不作依据)
+            if not w:
+                continue
             if w >= LIVE_MIN_W and h >= LIVE_MIN_H:
                 passing.append({'url': u, 'w': w, 'h': h,
                                 'method': method, 'ms': r['ms']})
         if not passing:
             continue
-        # 实测优先于名字标签; 再按分辨率降序、耗时升序
-        passing.sort(key=lambda x: (x['method'] in ('master', 'ffmpeg'),
+        # 实测优先(master佐证次之); 再按分辨率降序、耗时升序
+        passing.sort(key=lambda x: (x['method'] == 'ffmpeg',
                                     x['w'] * x['h'], -x['ms']), reverse=True)
         channels.append({'name': key, 'group': c['entry']['group'],
                          'urls': passing[:LIVE_KEEP],
@@ -642,13 +837,32 @@ def collect():
                 out.append(('', u))
         return out
 
+    def follow_store(url, alias, depth=0):
+        """递归跟进一个仓: 自己进stores, 若是多仓则继续跟子仓(验到最后一级)"""
+        if url in seen_store or len(stores) >= SUB_TOTAL_LIMIT:
+            return 0
+        try:
+            cfg = fetch_json(url, 12)
+        except Exception as e:
+            log('[聚合跳过] %s -> %s' % (url, str(e)[:60]))
+            return 0
+        add_store(alias, url, cfg)
+        n = extract_apis(cfg, '聚合')
+        if depth >= SUB_DEPTH:
+            return n
+        for nm, s2 in sub_entries(cfg)[:SUB_LIMIT]:
+            n += follow_store(s2, nm, depth + 1)
+        return n
+
     if not os.path.exists(SOURCES):
         log('缺少 sources.txt')
         return pool, stores
     with open(SOURCES, encoding='utf-8-sig') as f:
         lines = [ln.strip() for ln in f]
+    dir_lines = [ln for ln in lines if ln.startswith('D|')]
     for line in lines:
-        if not line or line.startswith('#') or line.startswith('L|'):
+        if not line or line.startswith('#') or line.startswith('L|') \
+                or line.startswith('D|'):
             continue
         if line.startswith('@'):
             rest = line[1:].strip()
@@ -666,14 +880,8 @@ def collect():
             subs = sub_entries(cfg)[:SUB_LIMIT]
             nsub = 0
             for nm, s2 in subs:
-                try:
-                    cfg2 = fetch_json(s2, 12)
-                except Exception as e:
-                    log('[聚合跳过] %s -> %s' % (s2, str(e)[:60]))
-                    continue
-                add_store(nm, s2, cfg2)
-                nsub += extract_apis(cfg2, '聚合')
-            log('[订阅] %s 直提%d接口, 跟进%d子仓(接口+%d)' % (
+                nsub += follow_store(s2, nm, 1)
+            log('[订阅] %s 直提%d接口, 跟进%d子仓及孙仓(接口+%d)' % (
                 rest, n, len(subs), nsub))
         else:
             if '|' in line:
@@ -681,6 +889,43 @@ def collect():
                 add(u.strip(), alias.strip(), '手动')
             else:
                 add(line, '', '手动')
+
+    # ---- 目录仓发现: 自动从网上找点播源(无需人工) ----
+    for dline in dir_lines:
+        rest = dline[2:].strip()
+        alias = ''
+        if '|' in rest:
+            u, alias = rest.split('|', 1)
+            rest, alias = u.strip(), alias.strip()
+        try:
+            j = fetch_json(rest, 20)
+        except Exception as e:
+            log('[目录仓失败] %s -> %s' % (rest, e))
+            continue
+        resources = j.get('resources') or []
+        found = 0
+        for item in resources:
+            cat = str(item.get('category') or '')
+            if cat not in DIR_CATEGORIES:
+                continue
+            u = str(item.get('url') or '')
+            nm = str(item.get('name') or '')
+            if not u.startswith('http'):
+                continue
+            if u in seen_store:
+                continue
+            try:
+                cfg = fetch_json(u, 12)
+            except Exception as e:
+                log('[发现跳过] %s %s -> %s' % (nm, u, str(e)[:50]))
+                continue
+            add_store(nm, u, cfg)
+            extract_apis(cfg, '发现')
+            found += 1
+            if found >= DIR_LIMIT:
+                break
+        log('[目录仓] %s 发现%d个新仓(共%d资源)' % (
+            alias or rest, found, len(resources)))
     return pool, stores
 
 
@@ -748,22 +993,27 @@ def write_report(items, alive, suspect, deadlist, scored, channels,
         len(items), len(alive), len(suspect), len(deadlist)))
 
     lines += ['', '## 二、仓体检 (store.json, 按健康分排序)', '',
-              '健康分 = 仓内站点依赖(jar/脚本/接口/网页)可达占比;'
-              '低于 %d%% 连续 %d 轮的仓剔除出清单' % (
-                  STORE_MIN_HEALTH * 100, STORE_FAIL_LIMIT), '',
-              '| 状态 | 仓 | 分数 | 站点存活 | jar | 说明 |',
-              '|---|---|---|---|---|---|']
+              '健康分 = 站点存活占比; 含CMS接口深测(实际调用验证有真实数据'
+              '+抽真实视频测广告); ext内嵌接口递归拆测; 子仓跟到孙仓级', '',
+              '门槛: 低于 %d%% 或抽测发现插广告的仓本轮剔除(下轮达标自动回来);'
+              ' 多仓入口不参与分数' % (STORE_MIN_HEALTH * 100), '',
+              '| 状态 | 仓 | 分数 | 站点存活 | jar | 广告 | 说明 |',
+              '|---|---|---|---|---|---|---|']
     for s in scored:
         st = s.get('state') or ''
         score = s.get('score')
-        pct = ('%d%%' % (score * 100)) if score is not None else '未测'
+        pct = ('%d%%' % (score * 100)) if score is not None else '入口'
         site = '%d/%d' % (s.get('alive', 0), s.get('total', 0))
+        if s.get('deep'):
+            site += ' (深测%d)' % s['deep']
         if s.get('unknown'):
             site += ' (+%d未测)' % s['unknown']
         jar = s.get('jar_ok')
         jar_txt = '—' if jar is None else ('正常' if jar else '失效')
-        lines.append('| %s | %s | %s | %s | %s | %s |' % (
-            st, (s.get('name') or '未命名')[:18], pct, site, jar_txt,
+        ad = s.get('ad_hits') or 0
+        ad_txt = ('发现%d' % ad) if ad else '未发现'
+        lines.append('| %s | %s | %s | %s | %s | %s | %s |' % (
+            st, (s.get('name') or '未命名')[:18], pct, site, jar_txt, ad_txt,
             s.get('note') or ''))
     kept = [s for s in scored if s.get('state') == '保留']
     lines.append('')
@@ -771,8 +1021,9 @@ def write_report(items, alive, suspect, deadlist, scored, channels,
         len(scored), len(kept), len(scored) - len(kept)))
 
     lines += ['', '## 三、高清直播 (live.json, 频道白名单)', '',
-              '收录标准: 实测分辨率 >= 720p(高清); 每频道保留画质最好的前%d条线路'
-              % LIVE_KEEP, '',
+              '收录标准: ffmpeg拉流实测 >= 720p(名字标签不作依据);'
+              '拒收: IPv6线路/实测不出分辨率/疑似插广告(ts域名分散);'
+              '每频道保留画质最好的前%d条线路' % LIVE_KEEP, '',
               '| 频道 | 分组 | 线路数 | 最佳画质 |', '|---|---|---|---|']
     for c in channels:
         best = max(c['urls'], key=lambda u: u['w'] * u['h'])
@@ -901,25 +1152,25 @@ def main():
         url = s['url']
         score = s.get('score')
         if score is None:
+            # 入口仓(无sites的多仓导航): 不参与分数剔除
             s['state'] = '保留'
-            s['note'] = '依赖不可直测, 保留观察'
+            s['note'] = '多仓入口(导航), 子仓已独立体检'
             dead_stores.pop(url, None)
+            continue
+        if s.get('ad_hits'):
+            s['state'] = '剔除'
+            s['note'] = '抽测发现 %d 个站点播放带广告, 本轮剔除' % s['ad_hits']
+            dead_stores[url] = {'last_fail': now, 'ads': s['ad_hits']}
             continue
         if score >= STORE_MIN_HEALTH:
             s['state'] = '保留'
             dead_stores.pop(url, None)
         else:
-            fails = int(dead_stores.get(url, {}).get('fails', 0)) + 1
-            dead_stores[url] = {'fails': fails, 'last_fail': now,
-                                'score': round(score, 2)}
-            if fails >= STORE_FAIL_LIMIT:
-                s['state'] = '剔除'
-                s['note'] = '健康分 %d%%, 连续 %d 轮低于 %d%%' % (
-                    score * 100, fails, STORE_MIN_HEALTH * 100)
-            else:
-                s['state'] = '保留'
-                s['note'] = '健康分 %d%% 偏低, 观察(第%d轮)' % (
-                    score * 100, fails)
+            # 一轮即踢: 每轮从sources重新归集, 下轮达标自动回来
+            s['state'] = '剔除'
+            s['note'] = '健康分 %d%% 低于门槛 %d%%, 本轮剔除' % (
+                score * 100, STORE_MIN_HEALTH * 100)
+            dead_stores[url] = {'last_fail': now, 'score': round(score, 2)}
     save_deadlog(dead_apis, dead_stores)
 
     # ---- 生成配置 ----
@@ -952,4 +1203,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
