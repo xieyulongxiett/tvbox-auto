@@ -1,12 +1,12 @@
 # TVBox 源检测报告
 
-检测时间: 2026-10-26 02:50 (北京时间)
+检测时间: 2026-10-26 06:25 (北京时间)
 
 ## 一、直链接口检测 (tvbox.json)
 
 | 状态 | 名称 | 接口 | 延迟 | 说明 |
 |---|---|---|---|---|
-| 剔除 | 🧿我要┃吃瓜 | `https://rose.tvdog.top/51chigua.py` | - | 连续失败 5 次: Expecting value: line 1 column 1 (char 0) |
+| 剔除 | 🧿我要┃吃瓜 | `https://rose.tvdog.top/51chigua.py` | - | 连续失败 6 次: Expecting value: line 1 column 1 (char 0) |
 
 接口归集 1 | 存活 0 | 疑似 0 | 剔除 1
 
@@ -55,11 +55,10 @@
 | CCTV-2 财经 | 央视 | 1 | 720p |
 | CCTV-3 综艺 | 央视 | 1 | 720p |
 | CCTV-4 中文国际 | 央视 | 1 | 720p |
-| CCTV-6 电影 | 央视 | 2 | 720p |
 | CCTV-7 国防军事 | 央视 | 1 | 720p |
 | CCTV-8 电视剧 | 央视 | 1 | 720p |
 | CCTV-9 纪录 | 央视 | 1 | 1080p |
-| 东方卫视 | 卫视 | 3 | 1080p |
+| 东方卫视 | 卫视 | 1 | 720p |
 | 安徽卫视 | 卫视 | 1 | 1080p |
 | 新疆卫视 | 卫视 | 3 | 1080p |
 | 河北卫视 | 卫视 | 2 | 4K |
@@ -73,7 +72,7 @@
 | 明珠台 | 中国香港 | 3 | 1080p |
 | 翡翠台 | 中国香港 | 3 | 4K |
 
-直播频道 28 个 / 线路 43 条; 上游: iptv-org中国✓、iptv-org香港✓、suxuang合集✓、fanmingming主源✓
+直播频道 27 个 / 线路 39 条; 上游: iptv-org中国✓、iptv-org香港✓、suxuang合集✓、fanmingming主源✓
 
 EPG 节目单: `http://epg.51zmt.top:8000/e.xml`
 
