@@ -115,9 +115,9 @@
         {
           "name": "新疆卫视",
           "urls": [
-            "http://120.70.60.179:9901/tsfile/live/1006_1.m3u8?authid=0&key=txiptv&playlive=1",
+            "http://110.153.180.106:55555/out_2/index.m3u8",
             "http://110.153.180.106:55555/out_3/index.m3u8",
-            "http://110.153.180.106:55555/out_2/index.m3u8"
+            "http://120.70.60.179:9901/tsfile/live/1006_1.m3u8?authid=0&key=txiptv&playlive=1"
           ]
         },
         {
@@ -181,17 +181,17 @@
         {
           "name": "明珠台",
           "urls": [
-            "http://r.jdshipin.com/jUx8K",
             "http://php.jdshipin.com/TVOD/iptv.php?id=mzt2",
-            "http://r.jdshipin.com/ZQ4kN"
+            "http://r.jdshipin.com/ZQ4kN",
+            "http://r.jdshipin.com/jUx8K"
           ]
         },
         {
           "name": "翡翠台",
           "urls": [
             "http://r.jdshipin.com/n90gt",
-            "http://r.jdshipin.com/qClQf",
-            "http://r.jdshipin.com/GeWKr"
+            "http://r.jdshipin.com/GeWKr",
+            "http://r.jdshipin.com/qClQf"
           ]
         }
       ]

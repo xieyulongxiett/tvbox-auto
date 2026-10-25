@@ -38,11 +38,11 @@ https://restream.pdtvhd.com/memfs/0b1b95c9-3543-4af9-9fdb-cf45f1602f17.m3u8
 #EXTINF:-1 group-title="卫视",安徽卫视
 https://restream.pdtvhd.com/memfs/c1cd2ed0-3b2b-4c25-af98-a7fb0b1eb130.m3u8
 #EXTINF:-1 group-title="卫视",新疆卫视
-http://120.70.60.179:9901/tsfile/live/1006_1.m3u8?authid=0&key=txiptv&playlive=1
+http://110.153.180.106:55555/out_2/index.m3u8
 #EXTINF:-1 group-title="卫视",新疆卫视
 http://110.153.180.106:55555/out_3/index.m3u8
 #EXTINF:-1 group-title="卫视",新疆卫视
-http://110.153.180.106:55555/out_2/index.m3u8
+http://120.70.60.179:9901/tsfile/live/1006_1.m3u8?authid=0&key=txiptv&playlive=1
 #EXTINF:-1 group-title="卫视",河北卫视
 https://event.pull.hebtv.com/live/live101.m3u8
 #EXTINF:-1 group-title="卫视",河北卫视
@@ -70,14 +70,14 @@ http://r.jdshipin.com/0Rp07
 #EXTINF:-1 group-title="中国香港",凤凰卫视资讯台
 http://43.152.224.209/qctv.fengshows.cn/live/0701pin72.flv
 #EXTINF:-1 group-title="中国香港",明珠台
-http://r.jdshipin.com/jUx8K
-#EXTINF:-1 group-title="中国香港",明珠台
 http://php.jdshipin.com/TVOD/iptv.php?id=mzt2
 #EXTINF:-1 group-title="中国香港",明珠台
 http://r.jdshipin.com/ZQ4kN
+#EXTINF:-1 group-title="中国香港",明珠台
+http://r.jdshipin.com/jUx8K
 #EXTINF:-1 group-title="中国香港",翡翠台
 http://r.jdshipin.com/n90gt
 #EXTINF:-1 group-title="中国香港",翡翠台
-http://r.jdshipin.com/qClQf
-#EXTINF:-1 group-title="中国香港",翡翠台
 http://r.jdshipin.com/GeWKr
+#EXTINF:-1 group-title="中国香港",翡翠台
+http://r.jdshipin.com/qClQf
