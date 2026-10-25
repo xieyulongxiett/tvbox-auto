@@ -33,10 +33,6 @@
       "sourceUrl": "https://www.yingm.cc/dm/dm.json"
     },
     {
-      "sourceName": "qist大而全 95分",
-      "sourceUrl": "https://gh-proxy.com/https://raw.githubusercontent.com/qist/tvbox/master/0821.json"
-    },
-    {
       "sourceName": "🚀小盒子 94分",
       "sourceUrl": "http://xhztv.top/xhz"
     },
@@ -45,8 +41,16 @@
       "sourceUrl": "https://jihulab.com/xuanzhuapp/xzys/-/raw/main/xzvip.json"
     },
     {
+      "sourceName": "qist大而全 92分",
+      "sourceUrl": "https://gh-proxy.com/https://raw.githubusercontent.com/qist/tvbox/master/0821.json"
+    },
+    {
       "sourceName": "老刘备 91分",
       "sourceUrl": "https://raw.liucn.cc/box/m.json"
+    },
+    {
+      "sourceName": "🐹dxawi 81分",
+      "sourceUrl": "https://dxawi.github.io/0/0.json"
     },
     {
       "sourceName": "挺好分享多仓",
