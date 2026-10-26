@@ -2,8 +2,10 @@ name: auto-check-sources
 
 on:
   schedule:
-    # 每4小时一次(UTC 0/4/8/12/16/20点), 直播线路死得快需要勤换
-    - cron: '0 */4 * * *'
+    # v2: 每天1次(UTC 21:00 = 北京时间凌晨5:00), 早上生效
+    # 上游(iptv-org/Guovin)本身每日更新, 跟天级节奏即可; 月耗 360->60 分钟
+    # 急需立即生效: Actions -> auto-check-sources -> Run workflow 手动触发
+    - cron: '0 21 * * *'
   workflow_dispatch: {}
 
 permissions:
