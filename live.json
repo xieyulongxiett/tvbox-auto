@@ -71,6 +71,13 @@
           ]
         },
         {
+          "name": "CCTV-6 电影",
+          "urls": [
+            "http://69.30.245.50/live/cctv6.m3u8",
+            "http://198.204.240.250:82/live/cctv6.m3u8"
+          ]
+        },
+        {
           "name": "CCTV-7 国防军事",
           "urls": [
             "http://74.91.26.218:82/live/cctv7hd.m3u8"
@@ -96,6 +103,8 @@
         {
           "name": "东方卫视",
           "urls": [
+            "http://bp-resource-dfl.bestv.cn/155/3/video.m3u8",
+            "http://bp-resource-dfl.bestv.cn/148/3/video.m3u8",
             "https://restream.pdtvhd.com/memfs/0b1b95c9-3543-4af9-9fdb-cf45f1602f17.m3u8"
           ]
         },
@@ -108,8 +117,8 @@
         {
           "name": "新疆卫视",
           "urls": [
-            "http://110.153.180.106:55555/out_3/index.m3u8",
             "http://110.153.180.106:55555/out_2/index.m3u8",
+            "http://120.70.60.179:9901/tsfile/live/1006_1.m3u8?authid=0&key=txiptv&playlive=1",
             "http://218.84.35.38:3000/m3u8/live/tctv-2/index.m3u8"
           ]
         },
@@ -154,8 +163,8 @@
         {
           "name": "HOY TV",
           "urls": [
-            "http://r.jdshipin.com/sFw4S",
-            "http://php.jdshipin.com/TVOD/iptv.php?id=hoytv"
+            "http://php.jdshipin.com/TVOD/iptv.php?id=hoytv",
+            "http://r.jdshipin.com/sFw4S"
           ]
         },
         {
@@ -175,8 +184,8 @@
           "name": "明珠台",
           "urls": [
             "http://r.jdshipin.com/ZQ4kN",
-            "http://r.jdshipin.com/jUx8K",
-            "http://php.jdshipin.com/TVOD/iptv.php?id=mzt2"
+            "http://php.jdshipin.com/TVOD/iptv.php?id=mzt2",
+            "http://r.jdshipin.com/jUx8K"
           ]
         },
         {
