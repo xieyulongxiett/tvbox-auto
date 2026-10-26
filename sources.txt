@@ -6,16 +6,18 @@
 # 格式2: 订阅行: @配置地址 | 显示名
 #   - 配置本身与其子仓(含孙仓, 跟到最后一级)进入体检, 合格进 store.json
 #   - 支持: 带注释JSON / 图片伪装Base64 / 中文域名
+#   - v2: 同内容克隆仓(不同多仓指向同一子仓)自动去重, 只收一次
 #
 # 格式3: 直播上游行: L|m3u地址 | 显示名
-#   - ffmpeg逐条拉流实测画质, >=720p才收; IPv6/疑似广告拒收
+#   - ffmpeg逐条拉流实测画质, 主线路>=720p, 备用线路>=540p
+#   - 排序: 稳定优先(延迟分档>分辨率); IPv6/疑似广告拒收
 #
 # 格式4: 目录仓发现行: D|目录仓resources.json地址 | 显示名
 #   - 自动读取目录仓里 tvbox_config 类的配置地址, 体检合格即进清单
 #   - 点播源自动发现池, 无需人工添加新仓
 #
 # 说明: 仓或接口死了当天自动从清单消失, 活了自动回来; 无需手动维护
-# 加新仓 = 加一行; 不要的删一行; 第二天自动生效
+# 加新仓 = 加一行; 不要的删一行; 第二天自动生效(每天凌晨5点体检一轮)
 
 @http://ztha.top/TVBox/GYCK.json | 挺好分享多仓
 @http://xhztv.top/dc | 小盒子多仓
@@ -28,11 +30,12 @@
 # 目录仓: 自动发现新点播仓(13405 star, 每日自动检测126个资源)
 D|https://raw.githubusercontent.com/laoma528/awesome-zhuiju-free/main/resources/resources.json | 追剧目录仓
 
-# 直播源上游: 云端逐条拉流实测(ffmpeg), 只收 >=720p; IPv6/疑似广告自动拒收
+# 直播源上游: 云端逐条拉流实测(ffmpeg), 主线>=720p/备线>=540p; IPv6/疑似广告自动拒收
+# v2: 新增 Guovin 大池(25772 star, 每日自动采集校验测速, CCTV-1 候选线路50+条)
+L|https://gh-proxy.com/https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u | Guovin大池
 L|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u | iptv-org中国
 L|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/hk.m3u | iptv-org香港
 L|https://raw.githubusercontent.com/suxuang/myIPTV/main/ipv4.m3u | suxuang合集
 L|https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/index.m3u | fanmingming主源
 
 
-AI生成
