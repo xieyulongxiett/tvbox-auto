@@ -53,18 +53,29 @@ TIMEOUT_DEP = 8       # 仓依赖检测超时(秒)
 TIMEOUT_LIVE = 8      # 直播流拉取超时(秒)
 TIMEOUT_PROBE = 12    # ffmpeg/ffprobe 画质探测超时(秒)
 FAIL_LIMIT = 2        # 接口连续失败次数达到该值才剔除
-STORE_MIN_HEALTH = 0.8   # 仓健康分门槛: 用户要求 <80分 不要
+STORE_MIN_HEALTH = 0.9   # 仓健康分门槛: 90分 (宁缺勿滥)
 STORE_FAIL_LIMIT = 1     # 一轮即踢(每轮从sources重新归集, 下轮达标自动回来)
+STORE_TOP_N = 8          # 电视清单最多保留的高分仓数(少而精)
 MAX_WORKERS = 12
 FLAGS = ["qq", "iqiyi", "qiyi", "youku", "sohu", "letv", "mgtj", "bilibili"]
+
+# ---- v2: 点播画质抽测(点播也要高清) ----
+VOD_QUALITY_SAMPLE = 2   # 每仓抽几个CMS接口实测影片分辨率
+VOD_HD_MIN_H = 720       # 高清线: 高度<此值则降分
+VOD_QUALITY_PENALTY = 0.15  # 画质不达标的降分幅度
+
+# ---- v2: 首页推荐质量检测(首页推荐内容质量优化) ----
+REC_QUALITY_PENALTY = 0.12  # 首页空/海报挂 的降分幅度
 UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                     'AppleWebKit/537.36 (KHTML, like Gecko) '
                     'Chrome/126.0.0.0 Safari/537.36'}
 
 # ---- 直播参数 ----
-LIVE_MAX_CAND = 8     # 每频道最多实测候选地址数
-LIVE_KEEP = 3         # 每频道保留线路数
-LIVE_MIN_W, LIVE_MIN_H = 1280, 720   # 高清底线: 720p(须 ffmpeg 实测确认)
+LIVE_MAX_CAND = 16    # 每频道最多实测候选地址数(v2: 8->16 吃满大池)
+LIVE_KEEP = 3         # 每频道保留主线路数(高清层)
+LIVE_BACKUP_KEEP = 3  # v2: 备用层最多保留数(清晰度放宽 540p)
+LIVE_MIN_W, LIVE_MIN_H = 1280, 720   # 主线路高清底线: 720p(须 ffmpeg 实测确认)
+LIVE_BACKUP_MIN_H = 540   # v2: 备用线路门槛(540p), 保证有线路可换
 LIVE_NO_IPV6 = True   # 用户家无 IPv6: 含 IPv6 地址的线路一律不要
 
 # ---- 目录仓发现(自动找点播源) ----
@@ -369,6 +380,53 @@ def test_dep(url):
         return False
 
 
+def vod_quality_probe(api_url):
+    """v2: 点播画质抽测 —— 从CMS接口取一部真实影片的m3u8, ffmpeg实测分辨率.
+    返回 (高度, None); 失败/测不出返回 (0, 原因)"""
+    try:
+        j = fetch_json(join_api(api_url, 'ac=videolist&pg=1'), TIMEOUT_API)
+    except Exception as e:
+        return 0, str(e)[:40]
+    vods = j.get('list') or []
+    for v in vods[:3]:
+        play = str(v.get('vod_play_url') or '')
+        m = re.search(r'\$(https?://[^#\s]+\.m3u8[^#\s]*)', play)
+        if not m:
+            continue
+        w, h = ffprobe_res(m.group(1))
+        if h:
+            return h, None
+    return 0, '无可测m3u8'
+
+
+def recommend_quality_probe(cms_apis):
+    """v2: 首页推荐质量检测 —— 抽首页接口看内容与海报.
+    返回 (推荐条数, 海报挂率); 失败返回 (0,1)"""
+    if not cms_apis:
+        return 0, 1
+    api = cms_apis[0]
+    try:
+        j = fetch_json(join_api(api, 'ac=videolist&pg=1'), TIMEOUT_API)
+    except Exception:
+        return 0, 1
+    vods = j.get('list') or []
+    if not vods:
+        return 0, 1
+    pics = [str(v.get('vod_pic') or '') for v in vods[:5]]
+    pic_urls = [p for p in pics if p.startswith('http')]
+    if not pic_urls:
+        return len(vods), 1
+    ok_cnt = 0
+    for p in pic_urls:
+        try:
+            st, _ = http_get(p, 6, max_bytes=64)
+            if st == 200:
+                ok_cnt += 1
+        except Exception:
+            pass
+    return len(vods), 1 - ok_cnt / len(pic_urls)
+
+
 def assess_stores(stores):
     """给每个仓算健康分(含CMS接口深测: 实际调用验证内容)"""
     all_deps = set()
@@ -410,6 +468,24 @@ def assess_stores(stores):
                 if not no_ads:
                     cms_ad[a] = True
 
+    # v2: 画质抽测 + 推荐质量检测(只对有CMS接口的仓做, 每仓限抽样数)
+    quality_res = {}
+    rec_res = {}
+    q_tasks = []
+    for st, gjar, per in parsed:
+        cms_list = [e['cms'] for e in per if e['cms']][:VOD_QUALITY_SAMPLE]
+        if cms_list:
+            q_tasks.append((st['url'], cms_list))
+    if q_tasks:
+        log('画质抽测: %d 个仓 (抽影片实测分辨率, <720p 降分; 检首页推荐质量)...' % len(q_tasks))
+        with ThreadPoolExecutor(MAX_WORKERS) as ex:
+            futs = {}
+            for surl, cms_list in q_tasks:
+                futs[ex.submit(vod_quality_probe, cms_list[0])] = surl
+                rec_res[surl] = recommend_quality_probe(cms_list)
+            for fu in as_completed(futs):
+                quality_res[futs[fu]] = fu.result()
+
     out = []
     for st, gjar, per in parsed:
         alive_cnt, total, unknown, deep, ad_hits = 0, 0, 0, 0, 0
@@ -430,15 +506,37 @@ def assess_stores(stores):
             if all(dep_ok.get(d) for d in deps):
                 alive_cnt += 1
         score = (alive_cnt / total) if total else None
+        # v2: 画质抽测降分 —— 抽的影片实测 <720p, 该仓降 VOD_QUALITY_PENALTY
+        q_hit, q_note = quality_res.get(st['url'], (None, ''))
+        if q_hit is not None and score is not None and 0 < q_hit < VOD_HD_MIN_H:
+            score = max(0.0, score - VOD_QUALITY_PENALTY)
+            q_note = '抽测影片%d(<720p)' % q_hit
+        # v2: 推荐质量降分 —— 首页空/海报挂率高的仓降分
+        rec_n, rec_bad = rec_res.get(st['url'], (None, None))
+        rec_note = ''
+        if rec_n is not None and score is not None and rec_bad is not None:
+            if rec_n == 0:
+                score = max(0.0, score - REC_QUALITY_PENALTY)
+                rec_note = '首页无推荐'
+            elif rec_bad > 0.5:
+                score = max(0.0, score - REC_QUALITY_PENALTY / 2)
+                rec_note = '海报挂率%d%%' % int(rec_bad * 100)
         jar_ok = dep_ok.get(gjar) if gjar else None
         out.append(dict(st, score=score, alive=alive_cnt, total=total,
                         unknown=unknown, deep=deep, ad_hits=ad_hits,
-                        jar_ok=jar_ok))
+                        jar_ok=jar_ok,
+                        quality_h=q_hit if q_hit is not None else '',
+                        rec_note=rec_note or q_note))
         pct = ('%d%%' % (score * 100)) if score is not None else '未测'
         ad_txt = ', 广告%d' % ad_hits if ad_hits else ''
-        log('[仓体检] %-16s 分数%s (存活%d/%d含深测%d, 未测%d%s)' % (
+        extra = ''
+        if q_note:
+            extra += ', 画质降分'
+        if rec_note:
+            extra += ', 推荐降分'
+        log('[仓体检] %-16s 分数%s (存活%d/%d含深测%d, 未测%d%s%s)' % (
             (st.get('name') or '')[:16], pct, alive_cnt, total, deep,
-            unknown, ad_txt))
+            unknown, ad_txt, extra))
     return out
 
 
@@ -504,13 +602,13 @@ def build_whitelist():
     for name, pat in sats:
         add(name, '卫视', [pat])
 
+    # v2: 香港台 B 方案 —— 只要中文台(普通话):
+    #   保留: 凤凰中文/凤凰资讯/RTHK32(普通话台)
+    #   移除: 翡翠台(粤语)/明珠台(英语)/HOY(粤语)/RTHK31(粤语)
     hks = [
-        ('翡翠台', r'翡翠台?|(?<![a-z])jade(?![a-z])'),
-        ('明珠台', r'明珠台?|(?<![a-z])pearl(?![a-z])'),
         ('凤凰卫视中文台', r'凤凰卫视?中文|phoenixchinese'),
         ('凤凰卫视资讯台', r'凤凰资讯|phoenixinfonews'),
-        ('HOY TV', r'hoytv|hoy(?![a-z])'),
-        ('RTHK 港台电视31', r'rthk\w*31|港台(电视|電視)?31'),
+        ('RTHK 港台电视32', r'rthk\w*32|港台(电视|電視)?32'),
     ]
     for name, pat in hks:
         add(name, '中国香港', [pat])
@@ -520,6 +618,7 @@ def build_whitelist():
         ('金鹰卡通', r'金鹰卡通|金鹰动漫'),
         ('湖南经视', r'湖南经视'),
         ('湖南都市', r'湖南都市'),
+        ('湖南国际', r'湖南国际|hunaninternational'),  # v2: 新增
     ]
     for name, pat in huns:
         add(name, '湖南', [pat])
@@ -736,7 +835,8 @@ def collect_live(wl):
 
     channels = []
     for key, c in cands.items():
-        passing = []
+        hd = []        # v2: 高清层(>=720p) —— 主力线路
+        backup = []    # v2: 备用层(>=540p) —— 换线保底, 有得换好过没得换
         for (k2, u), (r, raw) in probe_res.items():
             if k2 != key or not r['ok']:
                 continue
@@ -744,17 +844,28 @@ def collect_live(wl):
             # 清晰度必须实测: 实测不出分辨率的线路一律不收(名字标签不作依据)
             if not w:
                 continue
+            entry = {'url': u, 'w': w, 'h': h, 'method': method, 'ms': r['ms']}
             if w >= LIVE_MIN_W and h >= LIVE_MIN_H:
-                passing.append({'url': u, 'w': w, 'h': h,
-                                'method': method, 'ms': r['ms']})
-        if not passing:
+                hd.append(entry)
+            elif h >= LIVE_BACKUP_MIN_H and w >= 960:
+                backup.append(entry)
+        if not hd and not backup:
             continue
-        # 实测优先(master佐证次之); 再按分辨率降序、耗时升序
-        passing.sort(key=lambda x: (x['method'] == 'ffmpeg',
-                                    x['w'] * x['h'], -x['ms']), reverse=True)
+        # v2 排序: 稳定优先 —— 延迟分档(快者优先) > 分辨率 > 实测方式
+        # 旧版"分辨率优先"会把高画质但高延迟的烂线排第一, 导致 CCTV-1 老卡
+        def stab_key(x):
+            ms_tier = 0 if x['ms'] < 1500 else (1 if x['ms'] < 3000 else 2)
+            return (ms_tier, -(x['w'] * x['h']), 0 if x['method'] == 'ffmpeg' else 1, x['ms'])
+        hd.sort(key=stab_key)
+        backup.sort(key=stab_key)
+        # 主力层不足时用备用层补齐, 保证每频道尽量有3条可换
+        urls = hd[:LIVE_KEEP]
+        if len(urls) < LIVE_KEEP:
+            urls += backup[:LIVE_KEEP - len(urls)]
         channels.append({'name': key, 'group': c['entry']['group'],
-                         'urls': passing[:LIVE_KEEP],
-                         'n_cand': len(c['urls'])})
+                         'urls': urls,
+                         'n_cand': len(c['urls']),
+                         'n_hd': len(hd), 'n_backup': len(backup)})
 
     order = {g: i for i, g in enumerate(LIVE_GROUPS)}
     channels.sort(key=lambda c: (order.get(c['group'], 9), c['name']))
@@ -788,11 +899,49 @@ def write_live(channels, repo):
 # ---------------- 归集(点播) ----------------
 
 def collect():
-    """归集: 返回 (接口池pool, 仓列表stores含cfg)"""
+    """归集: 返回 (接口池pool, 仓列表stores含cfg)
+    v2: 双层去重 —— URL归一化(剥代理前缀/参数/尾斜杠) + 内容指纹(站点api集合哈希)
+    不同多仓指向同一子仓时只收一次(先到先得, 记日志)"""
     pool = {}
     stores = []
     seen_store = set()
+    seen_fingerprint = {}
     SUB_LIMIT = 25
+
+    def norm_store_url(u):
+        """仓地址归一化: 剥 gh-proxy/jsdelivr 等代理前缀、去参数、去尾斜杠、小写host"""
+        u = u.strip()
+        for pref in ('https://gh-proxy.com/', 'https://ghproxy.net/',
+                     'https://ghfast.top/', 'https://mirror.ghproxy.com/',
+                     'https://cdn.jsdelivr.net/gh/'):
+            if u.lower().startswith(pref):
+                u = u[len(pref):]
+                if 'raw.githubusercontent.com' not in u[:60] and \
+                        not re.match(r'^https?://', u, re.I):
+                    u = 'https://' + u
+        try:
+            p = urllib.parse.urlsplit(u)
+        except Exception:
+            return u.lower().rstrip('/')
+        host = (p.hostname or '').lower()
+        path = (p.path or '').rstrip('/')
+        return (host + path) if path else host
+
+    def store_fingerprint(cfg):
+        """仓内容指纹: 取前5个站点的api/key集合排序后哈希 —— 拦截不同URL相同内容的克隆仓"""
+        sites = cfg.get('sites') or []
+        keys = []
+        for s in sites[:5]:
+            if not isinstance(s, dict):
+                continue
+            k = str(s.get('api') or '') or str(s.get('key') or '')
+            if k:
+                keys.append(norm_store_url(k) if k.startswith('http') else k)
+        if not keys:
+            return None
+        keys.sort()
+        import hashlib
+        return hashlib.md5('|'.join(keys).encode('utf-8')).hexdigest()
 
     def add(api, name, origin):
         api = api.strip()
@@ -803,11 +952,20 @@ def collect():
             pool[key] = {'api': api, 'name': name, 'origin': origin}
 
     def add_store(name, url, cfg):
-        if url in seen_store:
-            return
-        seen_store.add(url)
+        norm = norm_store_url(url)
+        if norm in seen_store:
+            return False
+        fp = store_fingerprint(cfg) if isinstance(cfg, dict) else None
+        if fp and fp in seen_fingerprint:
+            log('[重复仓跳过] %s 与已收录的 %s 内容相同' % (
+                (name or url)[:30], seen_fingerprint[fp][:30]))
+            return False
+        seen_store.add(norm)
+        if fp:
+            seen_fingerprint[fp] = (name or url)
         stores.append({'name': name or urllib.parse.urlparse(url).netloc,
                        'url': url, 'cfg': cfg})
+        return True
 
     def extract_apis(cfg, origin):
         n = 0
@@ -838,15 +996,18 @@ def collect():
         return out
 
     def follow_store(url, alias, depth=0):
-        """递归跟进一个仓: 自己进stores, 若是多仓则继续跟子仓(验到最后一级)"""
-        if url in seen_store or len(stores) >= SUB_TOTAL_LIMIT:
+        """递归跟进一个仓: 自己进stores, 若是多仓则继续跟子仓(验到最后一级)
+        v2: 重复仓(同URL马甲/同内容)直接不跟, 避免同一子仓被多个多仓重复拉入"""
+        norm = norm_store_url(url)
+        if norm in seen_store or len(stores) >= SUB_TOTAL_LIMIT:
             return 0
         try:
             cfg = fetch_json(url, 12)
         except Exception as e:
             log('[聚合跳过] %s -> %s' % (url, str(e)[:60]))
             return 0
-        add_store(alias, url, cfg)
+        if not add_store(alias, url, cfg):
+            return 0
         n = extract_apis(cfg, '聚合')
         if depth >= SUB_DEPTH:
             return n
@@ -875,7 +1036,8 @@ def collect():
             except Exception as e:
                 log('[订阅失败] %s -> %s' % (rest, e))
                 continue
-            add_store(alias, rest, cfg)
+            if not add_store(alias, rest, cfg):
+                continue   # v2: 与已收录仓重复, 子仓也无需再跟
             n = extract_apis(cfg, '订阅')
             subs = sub_entries(cfg)[:SUB_LIMIT]
             nsub = 0
@@ -912,7 +1074,7 @@ def collect():
             nm = str(item.get('name') or '')
             if not u.startswith('http'):
                 continue
-            if u in seen_store:
+            if norm_store_url(u) in seen_store:
                 continue
             try:
                 cfg = fetch_json(u, 12)
@@ -949,7 +1111,8 @@ def save_deadlog(apis, stores):
 
 
 def write_store(scored, alive_count, repo, live_ok):
-    """生成多仓清单 store.json: 我的直播 + 按健康分排序的点播仓"""
+    """生成多仓清单 store.json: 我的直播 + 按健康分排序的点播仓
+    v2: Top N 截断(STORE_TOP_N) —— 少而精, 电视列表只留高分头部仓"""
     entries = []
     if repo and live_ok:
         own = 'https://raw.githubusercontent.com/%s/main/live.json' % repo
@@ -959,7 +1122,9 @@ def write_store(scored, alive_count, repo, live_ok):
         own = 'https://raw.githubusercontent.com/%s/main/tvbox.json' % repo
         entries.append({'sourceName': '自动优选·直链检测',
                         'sourceUrl': tv_url(own)})
-    for s in scored:
+    kept_list = [s for s in scored if s.get('score') is not None]
+    dropped = len(kept_list) - STORE_TOP_N
+    for s in kept_list[:STORE_TOP_N]:
         name = (s.get('name') or '未命名')[:16]
         if s.get('score') is not None:
             name = '%s %d分' % (name, round(s['score'] * 100))
@@ -967,7 +1132,8 @@ def write_store(scored, alive_count, repo, live_ok):
     cfg = {'storeHouse': entries}
     with open(STORE, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
-    log('store.json 已生成: %d 个仓(含直播仓)' % len(entries))
+    log('store.json 已生成: %d 个仓(含直播仓, Top%d截断, 携弃%d个低分仓)' % (
+        len(entries), STORE_TOP_N, max(0, dropped)))
 
 
 def write_report(items, alive, suspect, deadlist, scored, channels,
@@ -993,12 +1159,15 @@ def write_report(items, alive, suspect, deadlist, scored, channels,
         len(items), len(alive), len(suspect), len(deadlist)))
 
     lines += ['', '## 二、仓体检 (store.json, 按健康分排序)', '',
-              '健康分 = 站点存活占比; 含CMS接口深测(实际调用验证有真实数据'
-              '+抽真实视频测广告); ext内嵌接口递归拆测; 子仓跟到孙仓级', '',
-              '门槛: 低于 %d%% 或抽测发现插广告的仓本轮剔除(下轮达标自动回来);'
-              ' 多仓入口不参与分数' % (STORE_MIN_HEALTH * 100), '',
-              '| 状态 | 仓 | 分数 | 站点存活 | jar | 广告 | 说明 |',
-              '|---|---|---|---|---|---|---|']
+               '健康分 = 站点存活占比; 含CMS接口深测(实际调用验证有真实数据'
+               '+抽真实视频测广告); ext内嵌接口递归拆测; 子仓跟到孙仓级', '',
+               '门槛: 低于 %d%% 或抽测发现插广告的仓本轮剔除(下轮达标自动回来);'
+               ' 多仓入口不参与分数' % (STORE_MIN_HEALTH * 100), '',
+               'v2: 抽测影片<720p降15分(点播画质); 首页无推荐/海报挂降分(推荐质量);',
+               '同内容克隆仓(不同多仓指向同一子仓)自动去重只收一次;',
+               '电视清单只保留前 %d 个高分仓(少而精)' % STORE_TOP_N, '',
+               '| 状态 | 仓 | 分数 | 站点存活 | jar | 广告 | 画质/推荐 | 说明 |',
+               '|---|---|---|---|---|---|---|---|']
     for s in scored:
         st = s.get('state') or ''
         score = s.get('score')
@@ -1012,29 +1181,50 @@ def write_report(items, alive, suspect, deadlist, scored, channels,
         jar_txt = '—' if jar is None else ('正常' if jar else '失效')
         ad = s.get('ad_hits') or 0
         ad_txt = ('发现%d' % ad) if ad else '未发现'
-        lines.append('| %s | %s | %s | %s | %s | %s | %s |' % (
+        qr = s.get('quality_h') or ''
+        recn = s.get('rec_note') or ''
+        qr_txt = ('%dp' % qr) if isinstance(qr, int) and qr else ''
+        if recn:
+            qr_txt = (qr_txt + ' ' if qr_txt else '') + recn
+        if not qr_txt:
+            qr_txt = '—'
+        lines.append('| %s | %s | %s | %s | %s | %s | %s | %s |' % (
             st, (s.get('name') or '未命名')[:18], pct, site, jar_txt, ad_txt,
-            s.get('note') or ''))
+            qr_txt, s.get('note') or ''))
     kept = [s for s in scored if s.get('state') == '保留']
     lines.append('')
-    lines.append('仓总数 %d | 保留 %d | 剔除 %d' % (
-        len(scored), len(kept), len(scored) - len(kept)))
+    lines.append('仓总数 %d | 保留 %d | 剔除 %d | 进电视清单 Top%d' % (
+        len(scored), len(kept), len(scored) - len(kept), STORE_TOP_N))
 
     lines += ['', '## 三、高清直播 (live.json, 频道白名单)', '',
-              '收录标准: ffmpeg拉流实测 >= 720p(名字标签不作依据);'
-              '拒收: IPv6线路/实测不出分辨率/疑似插广告(ts域名分散);'
-              '每频道保留画质最好的前%d条线路' % LIVE_KEEP, '',
-              '| 频道 | 分组 | 线路数 | 最佳画质 |', '|---|---|---|---|']
+               '收录标准: 主线路 ffmpeg拉流实测 >= 720p;'
+               '备用线路 >= 540p(保证有线路可换);',
+               '排序: 稳定优先(延迟分档) > 分辨率 —— 高画质但高延迟的烂线不再排第一;',
+               '拒收: IPv6线路/实测不出分辨率/疑似插广告(ts域名分散);',
+               '每频道保留前%d条线路(高清优先, 不足时540p备线补齐)' % LIVE_KEEP, '',
+               '| 频道 | 分组 | 线路数 | 高清/备线 | 最佳画质 |',
+               '|---|---|---|---|---|']
     for c in channels:
         best = max(c['urls'], key=lambda u: u['w'] * u['h'])
         res = '%dp' % best['h'] if best['h'] < 2000 else '4K'
-        lines.append('| %s | %s | %d | %s |' % (
-            c['name'], c['group'], len(c['urls']), res))
+        hb = '%d/%d' % (c.get('n_hd', 0), c.get('n_backup', 0))
+        lines.append('| %s | %s | %d | %s | %s |' % (
+            c['name'], c['group'], len(c['urls']), hb, res))
     lines.append('')
-    lines.append('直播频道 %d 个 / 线路 %d 条; 上游: %s' % (
-        len(channels), sum(len(c['urls']) for c in channels),
-        '、'.join('%s%s' % (u['name'] or u['url'],
-                            '✓' if u['ok'] else '✗') for u in up_stats)))
+    lines.append('直播频道 %d 个 / 线路 %d 条' % (
+        len(channels), sum(len(c['urls']) for c in channels)))
+    # v2: 直播上游健康表(上游挂了看得见, 手动补新上游有依据)
+    lines += ['', '### 直播上游健康表', '',
+               '| 状态 | 上游 | 命中白名单 | 总条数 | 备注 |',
+               '|---|---|---|---|---|']
+    for u in up_stats:
+        if u.get('ok'):
+            lines.append('| ✓ | %s | %d | %d | — |' % (
+                (u.get('name') or u['url'])[:36], u.get('matched', 0),
+                u.get('total', 0)))
+        else:
+            lines.append('| ✗ | %s | - | - | %s |' % (
+                (u.get('name') or u['url'])[:36], u.get('err') or '失败'))
     lines.append('')
     lines.append('EPG 节目单: `%s`' % LIVE_EPG)
 
