@@ -25,16 +25,16 @@
       "sourceUrl": "https://ys.cxkjg.cn/api/provide/tvbox"
     },
     {
-      "sourceName": "🚀小马线路 98分",
-      "sourceUrl": "https://szyyds.cn/tv/x.json"
-    },
-    {
       "sourceName": "qist大而全 98分",
       "sourceUrl": "https://gh-proxy.com/https://raw.githubusercontent.com/qist/tvbox/master/0821.json"
     },
     {
       "sourceName": "😹动漫城 96分",
       "sourceUrl": "https://www.yingm.cc/dm/dm.json"
+    },
+    {
+      "sourceName": "🚀小马线路 95分",
+      "sourceUrl": "https://szyyds.cn/tv/x.json"
     }
   ]
 }
