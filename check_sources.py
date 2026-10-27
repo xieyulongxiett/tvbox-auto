@@ -12,12 +12,17 @@
      -> 再测一次搜索(ac=detail&wd=); 搜不到的接口不标 searchable
    3. 仓体检: 解析每个仓的全部站点, 逐个测依赖(jar/脚本/接口/网页)可达,
       算健康分; 低于 STORE_MIN_HEALTH 的仓一轮即踢(下轮达标自动回来);
-      电视清单前3竞争: 完美仓(100%, >=30站的大仓允许死1个)优先,
-      不足时>=90分仓补位; 完美组内按内容量(站点数)优先
+      **v12 新增通道画像**: 纯文本统计子资源(jar/外挂js/接口)落在 GitHub 系
+      (含 gh-proxy 等加速代理)的比例, 超过 STORE_GH_MAX 直接不收 —— 这类仓
+      "能加载, 点进去一直转圈", 健康分再高也不能上电视;
+      电视清单 = 我的直播 + 最多 STORE_TOP_N 个仓, 按 GitHub依赖升序 >
+      分数降序 > jar率降序 取前 N; 仓死了自动跌出、别的仓自动补位
   4. 直播检测: 按频道白名单(央视/卫视/中国香港/湖南)从上游m3u归集候选,
      候选按上游轮转取样, 逐条拉流实测分辨率(带UA/Referer), >=720p 才收;
-     每频道按画质排序保留前 LIVE_KEEP 条 -> live.json(多线路) /
-     live.m3u(每台至多 LIVE_KEEP 条备源), 并作为"我的直播"仓进 store.json;
+     每频道按画质排序保留前 LIVE_KEEP 条 -> live.txt(主力: TVBox txt 格式,
+     一行一个台, 多线路用 "#" 分隔, 电视上"一台一次"+播放时可切线路) /
+     live.json(OSC多线路, 备查) / live.m3u(每台1条, 旧播放器兼容),
+     并作为"我的直播"仓进 store.json;
      某台一条实测线都没有时, 收"索引可达但测不出分辨率"的兜底线(标未实测)
   5. 熔断: 本轮接口数或频道数比上一版腰斩 -> 不覆盖 tvbox/store/live,
      只更新 report 并报警(防"全网抖动那天把能用的配置冲成空")
@@ -26,15 +31,16 @@
 
 产物:
   tvbox.json          单仓入口(精选直链接口 + 直播 + ads 广告域名)
-  store.json          多仓入口(我的影视 + 我的直播 + 前2外部仓)
-  live.json / live.m3u 直播(OSC多线路 / 通用m3u, 每台至多3条备源)
-  multi/mN.json       导航清理版多仓(只装体检合格的子仓)
+  store.json          多仓入口(我的直播 + 最多3个"点进去真能用"的仓)
+  live.txt            直播主力源(TVBox txt: 台名,线路1#线路2#线路3)
+  live.json / live.m3u 直播备用(OSC多线路 / 通用m3u, 每台1条)
+  multi/mN.json       导航清理版多仓(v12 起不再进 store 清单, 仅产物备查)
   ads_pool.json       广告域名采集清单(供人工过目后决定是否启用)
-  report.md           本轮体检报告
+  report.md           本轮体检报告(GH依赖 / jar率 两列直接标出会转圈的仓)
   dead_log.json       连续失败计数(防误杀)
 
 电视端入口(地址永远不变):
-  多仓入口 store.json: 我的影视(自己那份, ads 生效) + 我的直播 + 前2外部仓
+  多仓入口 store.json: 我的直播 + 最多3个外部仓(GitHub依赖低的优先)
   单仓入口 tvbox.json: 精选直链接口 + 直播 + ads 拦截
 
 v3 (2026-10-26): 导航仓重建清理版(multi/mN.json) —— 只装体检合格的子仓,
@@ -148,6 +154,54 @@ v10 (2026-10-27): 按用户提的六条要求逐条补 ——
       (31省+深圳) / 香港3 / 湖南5。只加质量门槛, 不增不减;
    ⑥ 测试 36 → 39 项
 
+v12 (2026-10-27): 两件事 —— 直播换 txt, 点播换选源标准
+   [一] 直播源格式(只在电视端实测暴露的问题)
+   用户电视端是影视仓 V5.0.31, 实测结论(截图+文件双重确认):
+   ① v10 的 live.m3u 每台写 3 条 -> 频道列表里一台变成 3 个同名台
+      (线上文件实测 146 条 EXTINF / 52 个独立台名 / 49 个台各重复3次);
+      根因: m3u 语法没有"一个台多条线路"这种结构, 同名多行只能是多个台;
+   ② live.json(OSC 风格 {"lives":[{group,channels:[{name,urls}]}]}) 在
+      影视仓上不认, 填进去加载失败 —— 这个格式本就不是通用标准;
+   ③ 正解是 TVBox 的 txt 格式(type 0): "台名,地址1#地址2#地址3",
+      播出列表只显示一个台, 播放时按线路切换。新增 live.txt 作主力源;
+      m3u 退回每台 1 条(LIVE_M3U_KEEP)只做旧播放器兼容, json 保留备查;
+   ④ store.json 的"我的直播"改指 live.txt(原来指 live.json, 点不开);
+   ⑤ 生成 txt 时对台名逗号、地址 "#" 做兜底清理, 防上游数据把行切错
+
+   [二] 点播选源标准(用户连续两轮质疑后查实的根因, 推翻了此前所有假设)
+   用户电视实测 "第1步(gh-proxy/高天流云)能进仓但一直转圈, 第2步(七牛云/
+   无名聚合)几秒就进去"。同一台电脑同时段实测通道速度:
+     gh-proxy.com 拉 65KB drpy2.min.js = 3.13s(21KB/s); 2.68MB jar 约130s
+     七牛云        拉 3.94MB jar        = 0.47s(8.4MB/s)  —— 快 400 倍
+   决定性差异不是 jar 好坏(两个 jar 都实测 md5 匹配), 而是**子资源依赖模式**:
+     高天流云 298 站: 227 站 api=./lib/drpy2.min.js + 287 站 ext=./js/*.js,
+       相对路径全落在 raw.githubusercontent -> 每开一个站再发 1~2 次请求,
+       实测子资源 514 个, **100% 在 GitHub 系** -> 必然转圈;
+     无名聚合 104 站: 全部 csp_ 打包进 jar, 子资源仅 3 个, **0% 在 GitHub**
+       -> 下 1 次 jar 后全本地, 秒开;
+     挺好分享 46 站: jar 93%, GitHub 依赖 0%, jar 与配置同域(ztha.top)
+       -> 秒开。这正是用户说"只有挺好分享能用"的原因。
+   ① 新增 cdn_profile(): 纯文本统计子资源(GitHub 依赖率 / jar 打包率),
+      **零网络请求** —— 云端"能不能访问"不可靠(gitee 对脚本请求回 423、
+      git.acwing.com 返回登录页、裸 UA 被大量站点 403), 用它当判据会误杀;
+      而"地址落在哪个域名"写死在配置里, 100% 可判定;
+   ② 新增硬门槛 STORE_GH_MAX=30%: 超过直接不进清单, 健康分再高也不收。
+      v10 只看健康分, 于是高天流云(298站/99% GH依赖)拿满分排第一位 ——
+      分数骗人, 那正是"能进仓、点开转圈"的来源;
+   ③ STORE_TOP_N 2 -> 3(用户拍板"3个就够, 但必须能看");
+      排序改为 GitHub依赖升序 > 分数降序 > jar率降序;
+   ④ 空仓(sites=0)不挂进清单: v10 无条件挂 tvbox.json 作"我的影视",
+      而 sources.txt 里直链接口一条都没配 -> 恒为空壳 -> 电视上一个红点 +
+      "接口无效 No value for uri"。现在 mine_sites>0 才挂;
+   ⑤ 多仓整棵展开成独立子仓各自体检(SUB_LIMIT 25->40, 总量 40->100):
+      挺好分享多仓 GYCK.json 一家 32 个子仓, 原来 25 会漏 7 个, 总量 40
+      会被它一个吃光。现在"一行多仓 = 几十个候选", 只留合格的进清单;
+   ⑥ 导航清理版(multi/)停止参与 store 竞争: 功能与"多仓展开自动筛"重复,
+      且文件在自己仓库(gh-proxy 通道), 光加载就要几秒, 展开后又是一堆仓;
+   ⑦ 极端兜底: 全部仓都超标时放宽取最接近的并在报告标警告 ——
+      空清单等于点播全废, 比慢一点更糟;
+   ⑧ report.md 仓体检表新增 `GH依赖` / `jar率` 两列, 超标的直接标 ✘转圈
+
 用法:
   python check_sources.py [--sources 路径] [--gitee]
 """
@@ -173,6 +227,10 @@ TVBOX = os.path.join(HERE, 'tvbox.json')
 STORE = os.path.join(HERE, 'store.json')
 LIVE_JSON = os.path.join(HERE, 'live.json')
 LIVE_M3U = os.path.join(HERE, 'live.m3u')
+# v12: TVBox txt 直播格式(type 0) —— 唯一能同时做到"一台只显示一次"和
+# "播放时可切多条线路"的格式。m3u 无多线路语法(同名多行=多个台),
+# json(OSC) 在影视仓 V5.0.31 上实测不认, 故以 txt 为主力源。
+LIVE_TXT = os.path.join(HERE, 'live.txt')
 REPORT = os.path.join(HERE, 'report.md')
 DEADLOG = os.path.join(HERE, 'dead_log.json')
 ADS_POOL = os.path.join(HERE, 'ads_pool.json')   # v10: 广告域名清单(供人工过目)
@@ -196,8 +254,29 @@ FAIL_LIMIT = 2        # 接口连续失败次数达到该值才剔除
 STORE_MIN_HEALTH = 0.9   # 补位仓门槛: 90分(凑不齐完美仓时用它补位)
 STORE_PERFECT = 1.0      # v4: 完美仓线=100%(一票否决: 死1个地址整仓出局)
 STORE_FAIL_LIMIT = 1     # 一轮即踢(每轮从sources重新归集, 下轮达标自动回来)
-STORE_TOP_N = 2          # v10: 外部仓留2个 —— 自己那份(tvbox.json)也进 store
-                         # 占1个位置, 合计仍是3个入口(v4 用户拍板"3个就好")
+STORE_TOP_N = 3          # v12: 外部点播仓留3个(用户实测拍板"3个就够了, 但必须能看")
+                         # v10 曾砍到2, 结果清单里只剩两个重依赖仓 + 一个空壳,
+                         # 电视上 4 个源有 3 个打不开 —— 少不等于精, 能看才算
+
+# ---- v12: 子资源通道门槛(纯文本判定, 零网络请求) ----
+# 病根: 仓"能不能加载"和"点进去能不能用"是两件事。配置 json 通常几十KB,
+# 走 gh-proxy 也能在 1~3 秒拉到, 所以仓看着是"活的"; 但仓里的真实内容
+# (spider jar / 站点级 js / lib/*.js) 也要下载, 那些动辄几MB、几十上百个,
+# 全压在同一个 21KB/s 的通道上 —— 于是"能进仓, 一直转圈"。
+# 实测(2026-10-27, 同一台电脑同一时段):
+#   gh-proxy.com 拉 65KB 的 drpy2.min.js = 3.13s(21KB/s), 拉 2.68MB jar 约130s
+#   七牛云 拉 3.94MB jar = 0.47s(8.4MB/s) —— 快 400 倍
+# 三个真实样本的指标完全分离, 中间没有过渡区:
+#   挺好分享 46站  jar率93%  GitHub依赖  0%  -> 电视秒开
+#   小马     62站  jar率65%  GitHub依赖  6%  -> 云端0.36s
+#   高天流云 298站 jar率24%  GitHub依赖 99%  -> 电视转圈
+STORE_GH_MAX = 0.30      # GitHub 系子资源占比上限: 超过即不入选(站点再多也不收)
+GH_HOSTS = ('raw.githubusercontent.com', 'raw.github.com', 'github.com',
+            'githubusercontent.com', 'github.io', 'githubassets.com')
+# 各类 GitHub 加速代理: 它们转发的内容仍然来自 GitHub, 速度同样受限,
+# 且会按 IP/频率拦截(gitee 实测返回 423), 所以一律按 GitHub 系计
+GH_PROXY_HINTS = ('gh-proxy.com', 'ghproxy', 'ghfast', 'moeyy.xyz',
+                  'ghapi.', 'kkgithub.com', 'hub.fastgit', 'gitclone.com')
 MAX_WORKERS = 12
 # v10: tvbox.json 的站点数上限。原先是"存活几个写几个", 几十个站在电视上
 # 翻不完; 用户要求"线路不要太多"。搜索不通的排到后面, 优先被截断的是它们。
@@ -237,6 +316,9 @@ UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
 # ---- 直播参数 ----
 LIVE_MAX_CAND = 16    # 每频道最多实测候选地址数(v2: 8->16 吃满大池)
 LIVE_KEEP = 3         # 每频道保留主线路数(高清层)
+# v12: m3u 每台只写 1 条。v10 写满3条换来的是"电视上一台显示3个同名频道",
+# 而 m3u 没有多线路语法, 两者不可兼得 —— 多线路改由 live.txt 承担。
+LIVE_M3U_KEEP = 1
 LIVE_BACKUP_KEEP = 3  # v2: 备用层最多保留数(清晰度放宽 540p)
 LIVE_MIN_W, LIVE_MIN_H = 1280, 720   # 主线路高清底线: 720p(须 ffmpeg 实测确认)
 LIVE_BACKUP_MIN_H = 540   # v2: 备用线路门槛(540p), 保证有线路可换
@@ -263,7 +345,10 @@ LIVE_EPG = 'http://epg.51zmt.top:8000/e.xml'
 
 # ---- 点播深测参数 ----
 SUB_DEPTH = 2          # 多仓子仓递归跟进深度(验到最后一级)
-SUB_TOTAL_LIMIT = 40   # 子仓跟进总量上限
+# v12: 40 -> 100。挺好分享多仓 GYCK.json 一家就有 32 个子仓, 原来 40 的
+# 总量上限会被它一个吃光, 后面 sources.txt 里的单仓就再没名额了 ——
+# 表现是"加了多仓反而把别的仓挤掉"。
+SUB_TOTAL_LIMIT = 100
 CMS_DEEP_LIMIT = 15    # 每仓最多深测的CMS接口数(实际调用验证内容)
 
 # ffmpeg 探测工具定位(云端apt安装; 本地尝试 imageio_ffmpeg)
@@ -739,6 +824,81 @@ def site_deps(cfg, base_url=''):
     return global_jar, per
 
 
+# ---- v12: 子资源通道画像 ----
+# 目的: 在"上电视之前"就知道这个仓点进去会不会转圈。
+# 只用配置文本判断, 一次网络请求都不发 —— 这点很关键:
+# 云端"能不能访问"并不可靠(gitee 对脚本请求返回 423 反爬、git.acwing.com
+# 返回登录页 HTML、裸 UA 被大量站点 403), 用它当判据会误杀好仓;
+# 而"子资源地址落在哪个域名"是配置里写死的, 100% 可判定, 也不会因为
+# 当天网络抖动把好仓筛掉。
+def is_gh_url(u):
+    """地址是否落在 GitHub 系(含各类加速代理)"""
+    low = as_str(u).lower()
+    if not low:
+        return False
+    if any(h in low for h in GH_HOSTS):
+        return True
+    return any(h in low for h in GH_PROXY_HINTS)
+
+
+def _abs_res(u, base_url):
+    """把子资源地址转绝对: 去掉 ;md5; 后缀, 相对路径按配置所在目录展开"""
+    u = as_str(u).split(';')[0].strip()
+    if not u:
+        return ''
+    if u.startswith('http'):
+        return u
+    if u.startswith(('./', '../')) or (not u.startswith('/') and '.' in u):
+        if base_url:
+            try:
+                return urllib.parse.urljoin(base_url, u)
+            except Exception:
+                return ''
+    return ''
+
+
+def cdn_profile(cfg, base_url=''):
+    """子资源通道画像. 返回 dict(sites, jar_packed, res_total, gh_cnt, gh_rate)
+      sites      : 站点数(空仓 = 0, 这种仓挂进清单就是电视上一个红点)
+      jar_packed : csp_ 站点数(代码打包在 jar 里, 只需下 1 次)
+      res_total  : 需要单独下载的子资源数(jar / 外挂 js / 接口)
+      gh_cnt     : 其中落在 GitHub 系的个数
+      gh_rate    : gh_cnt / res_total, 无资源时为 0.0
+    站点数优先看它自己, 不看声明 —— 有些仓 sites 是空数组但蜘蛛能拉满页面,
+    那种属于"网页源", 不在本函数判断范围内, 仍按 sites=0 处理。
+    """
+    cfg = as_dict(cfg)
+    sites = [s for s in as_list(cfg.get('sites')) if isinstance(s, dict)]
+    resources = []
+    jar_packed = 0
+
+    r = _abs_res(cfg.get('spider'), base_url)
+    if r:
+        resources.append(r)
+
+    for s in sites:
+        api = as_str(s.get('api'))
+        if api.startswith('csp_'):
+            jar_packed += 1          # 打包在 jar 里, 不计入独立资源
+        elif api.startswith(('http', './', '../')):
+            r = _abs_res(api, base_url)
+            if r:
+                resources.append(r)
+        for k in ('jar', 'ext'):
+            v = s.get(k)
+            if isinstance(v, str):
+                r = _abs_res(v, base_url)
+                if r and ('.js' in r.lower() or '.jar' in r.lower()
+                          or '/api' in r.lower() or k == 'jar'):
+                    resources.append(r)
+
+    gh_cnt = sum(1 for u in resources if is_gh_url(u))
+    total = len(resources)
+    return {'sites': len(sites), 'jar_packed': jar_packed,
+            'res_total': total, 'gh_cnt': gh_cnt,
+            'gh_rate': (gh_cnt / total) if total else 0.0}
+
+
 def test_dep(url):
     """v6: 失败重试一次. 一天只跑一轮 + 完美仓一票否决(0.10余量),
     一次网络抖动就能让整仓当天出局, 代价太大"""
@@ -806,14 +966,24 @@ def assess_stores(stores):
     for st in stores:
         kind = 'store'
         gjar, per = '', []
+        prof = {'sites': 0, 'jar_packed': 0, 'res_total': 0,
+                'gh_cnt': 0, 'gh_rate': 1.0}
         try:
             cfg = as_dict(st.get('cfg'))
             kind = store_kind(cfg)
             gjar, per = site_deps(cfg, as_str(st.get('url')))
+            # v12: 通道画像(纯文本, 零请求) —— 判定这个仓上电视会不会转圈
+            prof = cdn_profile(cfg, as_str(st.get('url')))
         except Exception as e:
             log('[仓体检跳过] %s -> %s: %s' % (
                 as_str(st.get('name'))[:16], type(e).__name__, e))
         st['kind'] = kind
+        st['gh_rate'] = prof['gh_rate']
+        st['gh_cnt'] = prof['gh_cnt']
+        st['res_total'] = prof['res_total']
+        st['sites_n'] = prof['sites']
+        st['jar_rate'] = ((prof['jar_packed'] / prof['sites'])
+                          if prof['sites'] else 0.0)
         parsed.append((st, gjar, per))
         for e in per:
             all_deps.update(e['deps'])
@@ -1472,8 +1642,13 @@ def write_ads_pool(con, one):
 
 
 def write_live(channels):
-    """生成 live.json(OSC风格) 与 live.m3u; 返回 lives 结构
-    v7: 去掉从未使用过的 repo 参数(签名骗人比缺参数更糟)"""
+    """生成 live.txt(TVBox txt 多线路) / live.json(OSC) / live.m3u; 返回 lives 结构
+    v7: 去掉从未使用过的 repo 参数(签名骗人比缺参数更糟)
+    v12: 主力源改为 live.txt —— 用户在影视仓 V5.0.31 实测:
+         · live.m3u 每台3条 -> 频道列表里一台显示成3个同名台(146条/52台)
+         · live.json(OSC)   -> 影视仓直接不认, 加载失败
+         · txt 的 "台名,url1#url2#url3" 是唯一同时满足"一台一次"+"可切线路"
+           且各分支都支持的写法, 故作为主推; m3u/json 保留给别的播放器用"""
     lives = []
     for g in LIVE_GROUPS:
         chans = [c for c in channels if c['group'] == g]
@@ -1483,13 +1658,33 @@ def write_live(channels):
                 for c in chans]})
     with open(LIVE_JSON, 'w', encoding='utf-8') as f:
         json.dump({'lives': lives}, f, ensure_ascii=False, indent=2)
+
+    # ---- v12: live.txt (TVBox type 0) ----
+    # 格式: 空行分隔分组, 分组行是 "组名,#genre#", 台行是 "台名,地址1#地址2#地址3"
+    # 台名/地址里的逗号与 # 会被解析器切错, 建库时统一兜一层(实测现有数据干净,
+    # 但上游池随时可能冒出带逗号的台名, 这里不留给线上翻车的机会)
+    tl = []
+    for g in LIVE_GROUPS:
+        chans = [x for x in channels if x['group'] == g]
+        if not chans:
+            continue
+        if tl:
+            tl.append('')          # 分组之间留空行, 纯为可读性(解析器会跳过)
+        tl.append('%s,#genre#' % g)
+        for c in chans:
+            urls = [u['url'] for u in c['urls'] if '#' not in u['url']]
+            if not urls:
+                continue
+            tl.append('%s,%s' % (c['name'].replace(',', ' '), '#'.join(urls)))
+    with open(LIVE_TXT, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(tl) + '\n')
+
     lines = ['#EXTM3U x-tvg-url="%s"' % LIVE_EPG]
-    # v10: 每台写满3条(v5 曾只写第1条, 理由是个别播放器不合并同名多行会显示
-    # 成重复频道)。用户拍板"每台3个源"—— 电视上主线路卡住/断流时当天还有得换,
-    # 不必等第二天更新。代价: 少数魔改播放器会把一台显示成3个同名频道。
+    # v12: 每台只写 LIVE_M3U_KEEP 条(默认1)。m3u 无法表达"一个台多条线路",
+    # 写多了就是多个同名频道; 换线需求由 live.txt 承接。
     for g in LIVE_GROUPS:
         for c in [x for x in channels if x['group'] == g]:
-            for u in c['urls'][:LIVE_KEEP]:
+            for u in c['urls'][:LIVE_M3U_KEEP]:
                 # v9: 带上 tvg-id/tvg-name, 播放器才能把台名对到 EPG 的 channel
                 epg = c.get('epg')
                 attr = (' tvg-id="%s" tvg-name="%s"' % (epg, epg)) if epg else ''
@@ -1498,8 +1693,10 @@ def write_live(channels):
                 lines.append(u['url'])
     with open(LIVE_M3U, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines) + '\n')
-    log('live.m3u: %d 个频道, 每台至多%d条; live.json 备线共 %d 条' % (
-        len(channels), LIVE_KEEP, sum(len(c['urls']) for c in channels)))
+    log('live.txt: %d 个频道, 共 %d 条线路(每台一台多条); '
+        'live.m3u: 每台 %d 条' % (
+            len(channels), sum(len(c['urls']) for c in channels),
+            LIVE_M3U_KEEP))
     return lives
 
 
@@ -1516,7 +1713,8 @@ def collect():
     nav_children = {}
     seen_store = set()
     seen_fingerprint = {}
-    SUB_LIMIT = 25
+    # v12: 25 -> 40。挺好分享多仓一家就 32 个子仓, 25 会漏掉最后 7 个
+    SUB_LIMIT = 40
     # v7: norm_store_url / store_fingerprint 已提到模块级(纯函数, 可单测)
 
     def add(api, name, origin):
@@ -1801,70 +1999,112 @@ def is_perfect_store(s):
     return total >= BIG_STORE_SITES and (total - alive) <= BIG_STORE_TOLERANCE
 
 
-def write_store(scored, repo, live_ok, multi_entries=None):
-    """v4: 电视清单 = 我的直播 + 前3仓(一票否决竞争制)
-    完美仓(100%存活)优先凑满3个; 不足时用>=90分仓按分数补位;
-    清理版多仓算1个仓同台竞争(分数=最低子仓分), 同为完美时多仓优先
-    (它每日重建, 死子仓会被自动剔除, 自带容错).
-    v2 的"自动优选·直链检测"条目已删(用户拍板)."""
+def write_store(scored, repo, live_ok, multi_entries=None, mine_sites=0):
+    """v12: 电视点播清单 = 我的直播 + 最多 STORE_TOP_N 个"点进去真能用"的仓
+
+    与 v10 的根本差别: 入选标准从"站点存活数"换成"子资源通道".
+    v10 只看健康分, 于是高天流云(298站, 99% 子资源压在 gh-proxy 上)拿了
+    100 分排在第一位, 而它在家里电视上点进去就是无限转圈 —— 分数骗人。
+    v12 三条硬门槛:
+      ① gh_rate > STORE_GH_MAX    -> 不收(再健康也是转圈)
+      ② sites_n == 0              -> 不收(挂上去就是电视上一个红点)
+      ③ score < STORE_MIN_HEALTH  -> 不收(站点大半打不开)
+    然后按 gh_rate 升序(直连优先) > 分数降序 > 内容量降序 取前 STORE_TOP_N。
+    某天某个仓死了, 它自然跌出前三, 后面的自动补位 —— 这就是"源失效后
+    别的源自动加进来"的实现方式, 不需要人工干预。
+    """
     entries = []
-    # v10: 自己那份配置也挂进 store —— ads 广告域名拦截只在"播放器直接加载的
-    # 那份配置"里生效, 而 store 里其他仓的 ads 由别人决定。用户用的是 store
-    # 入口, 不把自己这份挂上去, ads 那一层等于白做。
-    if repo:
+    # v12: "我的影视"(tvbox.json) 只在真有站点时才挂。
+    # v10 无条件挂, 而 sources.txt 里直链接口一条都没配 -> sites 恒为 0,
+    # 电视上就是一个带红点的空壳, 点它必报"接口无效 No value for uri"。
+    if repo and mine_sites > 0:
         mine = 'https://%s/%s/main/tvbox.json' % (RAW_HOST, repo)
         entries.append({'sourceName': '我的影视',
                         'sourceUrl': tv_url(mine)})
+    elif repo:
+        log('我的影视: tvbox.json 站点数为 0, 不挂进清单(挂了就是电视上一个红点)')
     if repo and live_ok:
-        own = 'https://%s/%s/main/live.json' % (RAW_HOST, repo)
+        # v12: 指向 live.txt —— live.json(OSC) 在影视仓 V5.0.31 上不认
+        own = 'https://%s/%s/main/live.txt' % (RAW_HOST, repo)
         entries.append({'sourceName': '我的直播',
                         'sourceUrl': tv_url(own)})
-    # 候选池: 单仓(有分数) + 清理版(带最低子仓分), 同台竞争
+
+    # ---- 候选池: 只收体检保留的真仓; 导航入口不参与(子仓已独立参选) ----
     cands = []
+    cut_gh = cut_empty = 0
     for s in scored:
-        # v7: 显式 kind 判断取代"score is None 即导航仓"的隐含约定
-        if s.get('kind') != 'nav' and s.get('score') is not None:
-            # v9: total 作为内容量代理 —— 站点多的仓内容广度更大
-            cands.append({'score': s['score'], 'multi': False, 's': s,
-                          'total': s.get('total') or 0,
-                          'perfect': is_perfect_store(s)})
-    for ent in (multi_entries or []):
-        disp, fn, mscore = ent[0], ent[1], ent[2]
-        n_sub = ent[3] if len(ent) > 3 else 0
-        if not repo:
-            log('[警告] 未取到 GITHUB_REPOSITORY, 清理版 %s 无法生成可访问地址, 跳过' % fn)
+        if s.get('kind') == 'nav' or s.get('score') is None:
             continue
-        cands.append({'score': mscore, 'multi': True, 'name': disp, 'fn': fn,
-                      'total': n_sub,
-                      'perfect': mscore >= STORE_PERFECT})
-    perfect = [c for c in cands if c['perfect']]
-    backup = [c for c in cands
-              if STORE_MIN_HEALTH <= c['score'] < STORE_PERFECT
-              and not c['perfect']]
-    # 完美组: 清理版优先(每日重建自带容错) > 内容量 > 分数
-    # 补位组分数是硬指标: 先按分数降序, 同分才清理版优先
-    perfect.sort(key=lambda c: (c['multi'], c['total'], c['score']),
-                 reverse=True)
-    backup.sort(key=lambda c: (c['score'], c['multi']), reverse=True)
-    chosen = (perfect + backup)[:STORE_TOP_N]
-    dropped = len(cands) - len(chosen)
+        if s.get('state') == '剔除':
+            continue
+        gh = s.get('gh_rate')
+        gh = 1.0 if gh is None else gh
+        if (s.get('sites_n') or 0) <= 0:
+            cut_empty += 1
+            continue
+        if gh > STORE_GH_MAX:
+            cut_gh += 1
+            log('[通道淘汰] %s: GitHub系子资源 %d/%d = %d%% > 上限%d%%, '
+                '上电视会转圈, 不收' % (
+                    as_str(s.get('name'))[:20], s.get('gh_cnt') or 0,
+                    s.get('res_total') or 0, round(gh * 100),
+                    round(STORE_GH_MAX * 100)))
+            continue
+        cands.append({'s': s, 'gh': gh,
+                      'score': s.get('score') or 0,
+                      'total': s.get('sites_n') or 0,
+                      'jar': s.get('jar_rate') or 0,
+                      # v9 的大仓容错继续沿用: >=30站的仓允许死1个仍算完美
+                      'perfect': is_perfect_store(s)})
+
+    # 极端情况兜底: 严格筛完一个都不剩时, 放宽到"最不坏的那几个", 并在
+    # 报告里标警告 —— 空清单等于点播全废, 比慢一点更糟
+    relaxed = False
+    if not cands:
+        pool2 = [s for s in scored
+                 if s.get('kind') != 'nav' and s.get('score') is not None
+                 and s.get('state') != '剔除' and (s.get('sites_n') or 0) > 0]
+        if pool2:
+            relaxed = True
+            log('[警告] 没有任何仓满足 GitHub 依赖 <= %d%%, 本轮放宽取最接近的; '
+                '请在 sources.txt 里补直连型仓' % round(STORE_GH_MAX * 100))
+            for s in pool2:
+                cands.append({'s': s, 'gh': s.get('gh_rate') or 1.0,
+                              'score': s.get('score') or 0,
+                              'total': s.get('sites_n') or 0,
+                              'jar': s.get('jar_rate') or 0,
+                              'perfect': is_perfect_store(s)})
+
+    # 直连优先 > 完美仓 > 组内(v9: 完美看内容量, 其余看分数) > jar率
+    # gh 放第一位: 0% 与 99% 的差别是"秒开"和"转圈", 比分数差几分重要得多
+    # perfect 组按 total 降序是 v9 的大仓容错: 200 站死 1 个仍是 99.5%,
+    # 不该被 3 站全活的小仓挤掉 —— 大仓才是内容最多的那个
+    cands.sort(key=lambda c: (c['gh'],
+                              0 if c['perfect'] else 1,
+                              -c['total'] if c['perfect'] else 0,
+                              -c['score'], -c['jar'], -c['total']))
+    chosen = cands[:STORE_TOP_N]
     for c in chosen:
-        if c['multi']:
-            own = 'https://%s/%s/main/%s' % (RAW_HOST, repo, c['fn'])
-            entries.append({'sourceName': c['name'], 'sourceUrl': tv_url(own)})
-        else:
-            s = c['s']
-            name = '%s %d分' % (as_str(s.get('name') or '未命名')[:16],
-                                round(c['score'] * 100))
-            entries.append({'sourceName': name,
-                            'sourceUrl': tv_url(as_str(s.get('url')))})
+        s = c['s']
+        name = '%s %d分' % (as_str(s.get('name') or '未命名')[:16],
+                            round(c['score'] * 100))
+        if c['gh'] > 0:
+            name += '·G%d' % round(c['gh'] * 100)   # 带 GitHub 依赖的标出来
+        entries.append({'sourceName': name,
+                        'sourceUrl': tv_url(as_str(s.get('url')))})
+
     cfg = {'storeHouse': entries}
     with open(STORE, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
-    n_perf = min(len(perfect), STORE_TOP_N)
-    log('store.json 已生成: %d 个入口(我的影视+我的直播+外部仓%d; 完美仓%d 补位%d, 弃%d个)' % (
-        len(entries), len(chosen), n_perf,
-        len(chosen) - n_perf, max(0, dropped)))
+    log('store.json 已生成: %d 个入口(直播%d + 点播仓%d; 候选%d, '
+        '通道淘汰%d, 空仓淘汰%d%s)' % (
+            len(entries), 1 if (repo and live_ok) else 0, len(chosen),
+            len(cands), cut_gh, cut_empty, ', 已放宽' if relaxed else ''))
+    for c in chosen:
+        log('  [入选] %-20s 站点%3d  GitHub依赖%3d%%  jar打包%3d%%  %d分' % (
+            as_str(c['s'].get('name'))[:20], c['total'],
+            round(c['gh'] * 100), round(c['jar'] * 100),
+            round(c['score'] * 100)))
 
 
 def write_report(items, alive, suspect, deadlist, scored, channels,
@@ -1914,13 +2154,19 @@ def write_report(items, alive, suspect, deadlist, scored, channels,
                'v2: 抽测影片<720p降6分(点播画质); 首页无推荐/海报挂降分(推荐质量);'
                ' v6: 惩罚分<门槛余量(0.10), 只影响排名不再等于剔除;',
                '同内容克隆仓(不同多仓指向同一子仓)自动去重只收一次;',
-               'v3: 导航仓生成清理版(multi/目录) —— 只装体检合格子仓, 死子仓不再拖累整仓;',
-               'v4: 电视清单只留前 %d 个仓 —— 一票否决竞争制: 完美仓(100%%存活)优先,'
-               '凑不满时用≥%d%%仓补位; 清理版多仓按最低子仓分算1个仓同台竞争,'
-               '同为完美时多仓优先(每日重建自带容错)' % (
-                   STORE_TOP_N, STORE_MIN_HEALTH * 100), '',
-               '| 状态 | 仓 | 分数 | 站点存活 | jar | 广告 | 画质/推荐 | 说明 |',
-               '|---|---|---|---|---|---|---|---|']
+               '**v12 新增两列, 它们决定点进去会不会转圈**:',
+               '- `GH依赖` = 子资源(jar/外挂js/接口)里落在 GitHub 系(含 gh-proxy'
+               ' 等各类加速代理)的比例。**超过 %d%% 直接不进清单** ——'
+               ' 配置 json 几十KB, 走代理也能几秒拉到, 所以"仓能打开";'
+               ' 但仓里的真实内容要另外下载, 全压在同一个慢通道上就是无限转圈。'
+               '实测 gh-proxy 21KB/s, 七牛云 8.4MB/s, 差 400 倍' % round(STORE_GH_MAX * 100),
+               '- `jar率` = 站点里 csp_ 打包型的占比。打包型只需下 1 个 jar,'
+               ' 之后全在本地跑; 外挂 js 型每开一个站都要再发 1~2 次请求',
+               'v12: 电视清单 = 我的直播 + 最多 %d 个仓, 按 GH依赖升序 >'
+               ' 分数降序 > jar率降序 取前 %d; 某仓死亡自动跌出、后面自动补位'
+               % (STORE_TOP_N, STORE_TOP_N), '',
+               '| 状态 | 仓 | 分数 | 站点存活 | GH依赖 | jar率 | jar | 广告 | 画质/推荐 | 说明 |',
+               '|---|---|---|---|---|---|---|---|---|---|']
     for s in scored:
         st = s.get('state') or ''
         score = s.get('score')
@@ -1946,13 +2192,28 @@ def write_report(items, alive, suspect, deadlist, scored, channels,
             qr_txt = (qr_txt + ' ' if qr_txt else '') + recn
         if not qr_txt:
             qr_txt = '—'
-        lines.append('| %s | %s | %s | %s | %s | %s | %s | %s |' % (
-            st, as_str(s.get('name') or '未命名')[:18], pct, site, jar_txt, ad_txt,
-            qr_txt, s.get('note') or ''))
+        # v12: 通道画像两列 —— 判定"上电视会不会转圈"的直接依据
+        gh = s.get('gh_rate')
+        if gh is None:
+            gh_txt = '—'
+        elif s.get('res_total'):
+            gh_txt = '%d%% (%d/%d)' % (round(gh * 100), s.get('gh_cnt') or 0,
+                                       s.get('res_total') or 0)
+        else:
+            gh_txt = '—'
+        if gh is not None and gh > STORE_GH_MAX:
+            gh_txt += ' ✘转圈'
+        jr = s.get('jar_rate')
+        jr_txt = ('%d%%' % round(jr * 100)) if jr is not None else '—'
+        lines.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |' % (
+            st, as_str(s.get('name') or '未命名')[:18], pct, site, gh_txt, jr_txt,
+            jar_txt, ad_txt, qr_txt, s.get('note') or ''))
     kept = [s for s in scored if s.get('state') == '保留']
     lines.append('')
-    lines.append('仓总数 %d | 保留 %d | 剔除 %d | 电视清单前%d(完美优先+补位)' % (
-        len(scored), len(kept), len(scored) - len(kept), STORE_TOP_N))
+    lines.append('仓总数 %d | 保留 %d | 剔除 %d | 电视清单前%d(GitHub依赖升序优先, '
+                 '>%d%% 直接不收)' % (
+                     len(scored), len(kept), len(scored) - len(kept),
+                     STORE_TOP_N, round(STORE_GH_MAX * 100)))
 
     lines += ['', '## 三、高清直播 (live.json, 频道白名单)', '',
                '收录标准: 主线路 ffmpeg拉流实测 >= 720p;'
@@ -1964,9 +2225,9 @@ def write_report(items, alive, suspect, deadlist, scored, channels,
                '索引广告指纹(DISCONTINUITY>=2次拼接·分片>2.5倍中位数的异常长段'
                '·首片超长起播贴片·ts域名分散; v6 改相对判定, 均匀长切片与'
                '单次重连不误杀);',
-               'v10: live.m3u 每台输出 %d 条线路(主线路不足才用备线补) —— '
-               '电视上主线路卡住当天还能换, 不必等第二天; 少数魔改播放器会把'
-               '一台显示成多个同名频道。' % LIVE_KEEP, '',
+               'v12: 主力源是 live.txt(TVBox txt 格式) —— 一行一个台, 多线路用'
+               ' "#" 分隔, 电视上"一台只显示一次"+播放时可切线路;'
+               ' live.m3u 每台只留 1 条(旧播放器兼容), live.json 保留备查。', '',
                '| 频道 | 分组 | 线路数 | 高清/备线 | 最佳画质 |',
                '|---|---|---|---|---|']
     for c in channels:
@@ -2083,7 +2344,7 @@ def sync_gitee():
     if not token or not repo:
         log('未配置 GITEE_TOKEN / GITEE_REPO, 跳过 Gitee 同步')
         return
-    for fp in ['tvbox.json', 'store.json', 'live.json', 'live.m3u',
+    for fp in ['tvbox.json', 'store.json', 'live.txt', 'live.json', 'live.m3u',
                'dead_log.json', 'report.md']:
         push_file_gitee(repo, fp, token)
     # v3: 导航清理版文件也同步
@@ -2245,14 +2506,21 @@ def main():
             len(sites), len(alive), max(0, len(alive) - MAX_SITES), no_search,
             len(lives), len(cfg['ads'])))
 
+    # v12: 清理版不再生成, 顺手删掉仓库里的旧 multi/(否则旧文件会一直留在
+    # 仓库里, 而 store.json 已经不再引用它们, 留着只会让人以为还在生效)
+    shutil.rmtree(os.path.join(HERE, 'multi'), ignore_errors=True)
+
     kept = [s for s in scored if s.get('state') != '剔除']
     # v7: 真仓在前、按分数降序; 导航入口只进报告不进 store.json
     kept.sort(key=lambda s: (1 if s.get('kind') != 'nav' else 0,
                              s.get('score') or 0), reverse=True)
-    # v3: 导航仓重建清理版(死子仓不拖累整仓); v4: 清理版参与前3竞争
-    multi_entries = write_multi_files(scored, nav_children)
+    # v12: 导航清理版(multi/mN.json)停止参与 store 竞争。
+    # 它当初是为"剔掉死子仓"而生, 现在多仓会整个展开成独立子仓各自体检,
+    # 功能重复; 而且清理版文件存在自己仓库里(gh-proxy 通道), 光加载就要几秒,
+    # 展开后又是一堆仓 —— 与"3个能看的"背道而驰。
+    # 函数保留不删(产物备查), 只是不再进清单。
     write_store(kept, os.environ.get('GITHUB_REPOSITORY', ''),
-                bool(channels), multi_entries)
+                bool(channels), None, mine_sites=len(sites))
     write_report(items, alive, suspect, deadlist, scored, channels,
                  up_stats, now)
     log('report.md 已生成')
