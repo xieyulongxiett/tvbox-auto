@@ -18,14 +18,27 @@
 #
 # 说明: 仓或接口死了当天自动从清单消失, 活了自动回来; 无需手动维护
 # 加新仓 = 加一行; 不要的删一行; 第二天自动生效(每天凌晨5点体检一轮)
+#
+# ---- v12: 选源标准变了, 请按两条新原则加仓 ----
+# ① 优先直连域名(jar/js 和配置同域, 或七牛云/阿里云OSS这类 CDN)
+#    反例: 配置和 jar 都在 raw.githubusercontent.com, 只能走 gh-proxy 中转 ——
+#    实测那条通道 21KB/s, 拉一个 2.68MB 的 jar 要 130 秒, 电视上就是无限转圈。
+# ② 优先 jar 打包型(csp_ 站点), 少用外挂 js 型(./lib/*.js)
+#    打包型只需下 1 个 jar, 之后全在本地跑; 外挂型每开一个站都要再发请求。
+# 这两条现在由脚本自动判定(GitHub依赖 > 30% 直接不收), 你不用自己算,
+# 报告 report.md 里每个仓都标了 `GH依赖` 和 `jar率` 两列。
+#
+# 多仓会自动展开成独立子仓各自体检, 只有合格的那几个进清单 ——
+# 所以一行多仓 = 几十个候选, 是扩大候选池最省事的方式。
 
-@http://ztha.top/TVBox/GYCK.json | 挺好分享多仓
-@http://xhztv.top/dc | 小盒子多仓
-@http://xhztv.top/4k.json | 小盒子4K
-@http://xhztv.top/xhz | 小盒子单仓
-@http://www.饭太硬.net/tv | 饭太硬
+@https://ztha.top/TVBox/GYCK.json | 挺好分享多仓
 @https://6800.kstore.vip/fish.json | 无名聚合
 @https://raw.githubusercontent.com/qist/tvbox/master/0821.json | qist大而全
+
+# 以下三个 2026-10-27 实测拉不通, 暂时注释掉(留着备查, 通了再放开):
+# @http://xhztv.top/dc | 小盒子多仓            ← 证书 SNI 不匹配
+# @http://xhztv.top/4k.json | 小盒子4K          ← 同上
+# @http://www.饭太硬.net/tv | 饭太硬             ← 中文域名, 连接失败
 
 # 目录仓: 自动发现新点播仓(13405 star, 每日自动检测126个资源)
 D|https://raw.githubusercontent.com/laoma528/awesome-zhuiju-free/main/resources/resources.json | 追剧目录仓
