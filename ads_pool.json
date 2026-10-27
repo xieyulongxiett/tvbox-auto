@@ -2,7 +2,6 @@
  "enabled": false,
  "min_votes": 2,
  "consensus": [
-  "mozai.4gtv.tv",
   "static-mozai.4gtv.tv"
  ],
  "single": [
@@ -27,6 +26,7 @@
   "mc.usihnbcq.cn",
   "mg.g1mm3d.cn",
   "mimg.0c1q0l.cn",
+  "mozai.4gtv.tv",
   "mscs.svaeuzh.cn",
   "ppl.xunzhuo123.com",
   "q11.cnzz.com",

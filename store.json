@@ -1,20 +1,20 @@
 {
   "storeHouse": [
     {
-      "sourceName": "我的影视",
-      "sourceUrl": "https://gh-proxy.com/https://raw.githubusercontent.com/xieyulongxiett/tvbox-auto/main/tvbox.json"
-    },
-    {
       "sourceName": "我的直播",
-      "sourceUrl": "https://gh-proxy.com/https://raw.githubusercontent.com/xieyulongxiett/tvbox-auto/main/live.json"
-    },
-    {
-      "sourceName": "🚀高天流云 100分",
-      "sourceUrl": "https://gh-proxy.com/https://raw.githubusercontent.com/gaotianliuyun/gao/master/js.json"
+      "sourceUrl": "https://gh-proxy.com/https://raw.githubusercontent.com/xieyulongxiett/tvbox-auto/main/live.txt"
     },
     {
       "sourceName": "无名聚合 100分",
       "sourceUrl": "https://6800.kstore.vip/fish.json"
+    },
+    {
+      "sourceName": "📛挺好分享 100分",
+      "sourceUrl": "https://ztha.top/TVBox/thdjk.json"
+    },
+    {
+      "sourceName": "肥猫 100分",
+      "sourceUrl": "http://肥猫.net/"
     }
   ]
 }
