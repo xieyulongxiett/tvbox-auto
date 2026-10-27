@@ -32,10 +32,12 @@ D|https://raw.githubusercontent.com/laoma528/awesome-zhuiju-free/main/resources/
 
 # 直播源上游: 云端逐条拉流实测(ffmpeg), 主线>=720p/备线>=540p; IPv6/疑似广告自动拒收
 # v2: 新增 Guovin 大池(25772 star, 每日自动采集校验测速, CCTV-1 候选线路50+条)
+# v5: 查证 Guovin gd 输出分支 2026-08-27 后停更(旧名单渐腐, 湖南台线路已死光),
+#     新增 vbskycn 活池(每日更新, 428频道)作补充; Guovin 保留(美国命硬线仍多)
+# v6: 候选改为按上游轮转取样 —— 顺序不再决定谁被实测, 上面两行谁先谁后都一样
 L|https://gh-proxy.com/https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u | Guovin大池
+L|https://gh-proxy.com/https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv4.m3u | vbskycn活池
 L|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u | iptv-org中国
 L|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/hk.m3u | iptv-org香港
 L|https://raw.githubusercontent.com/suxuang/myIPTV/main/ipv4.m3u | suxuang合集
 L|https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/index.m3u | fanmingming主源
-
-

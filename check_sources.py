@@ -4,27 +4,155 @@
 
 流程:
   1. sources.txt:
-       @订阅行  = 别人的点播配置(进仓体检)
+       @订阅行  = 别人的点播配置(进仓体检, 子仓跟到孙仓)
        手动行   = 苹果CMS直链接口(进接口检测)
        L|上游行 = 直播源m3u(进直播检测)
+       D|目录仓 = 从目录仓 resources.json 自动发现新点播仓
   2. 接口检测: 连通 -> 分类/数据有效 -> 抽一个视频验证播放地址可达
-  3. 仓体检: 解析每个仓的全部站点, 逐个测依赖(jar/脚本/接口/网页)可达,
-     算健康分; 低于 STORE_MIN_HEALTH 且连续 STORE_FAIL_LIMIT 轮的仓剔除,
-     存活仓按分数排序写入 store.json (名称带分数)
+     -> 再测一次搜索(ac=detail&wd=); 搜不到的接口不标 searchable
+   3. 仓体检: 解析每个仓的全部站点, 逐个测依赖(jar/脚本/接口/网页)可达,
+      算健康分; 低于 STORE_MIN_HEALTH 的仓一轮即踢(下轮达标自动回来);
+      电视清单前3竞争: 完美仓(100%, >=30站的大仓允许死1个)优先,
+      不足时>=90分仓补位; 完美组内按内容量(站点数)优先
   4. 直播检测: 按频道白名单(央视/卫视/中国香港/湖南)从上游m3u归集候选,
-     逐条拉流实测分辨率, >=720p 才收; 每频道按画质排序保留前 LIVE_KEEP 条,
-     生成 live.json / live.m3u, 并作为"我的直播"仓进 store.json
-  5. 结果写入 report.md; 失败计数写入 dead_log.json (防误杀)
-  6. --gitee 参数: 把结果同步到 Gitee 仓库 (需 GITEE_TOKEN / GITEE_REPO)
+     候选按上游轮转取样, 逐条拉流实测分辨率(带UA/Referer), >=720p 才收;
+     每频道按画质排序保留前 LIVE_KEEP 条 -> live.json(多线路) /
+     live.m3u(每台至多 LIVE_KEEP 条备源), 并作为"我的直播"仓进 store.json;
+     某台一条实测线都没有时, 收"索引可达但测不出分辨率"的兜底线(标未实测)
+  5. 熔断: 本轮接口数或频道数比上一版腰斩 -> 不覆盖 tvbox/store/live,
+     只更新 report 并报警(防"全网抖动那天把能用的配置冲成空")
+  6. 结果写入 report.md; 失败计数写入 dead_log.json (防误杀)
+  7. --gitee 参数: 把结果同步到 Gitee 仓库 (需 GITEE_TOKEN / GITEE_REPO)
+
+产物:
+  tvbox.json          单仓入口(精选直链接口 + 直播 + ads 广告域名)
+  store.json          多仓入口(我的影视 + 我的直播 + 前2外部仓)
+  live.json / live.m3u 直播(OSC多线路 / 通用m3u, 每台至多3条备源)
+  multi/mN.json       导航清理版多仓(只装体检合格的子仓)
+  ads_pool.json       广告域名采集清单(供人工过目后决定是否启用)
+  report.md           本轮体检报告
+  dead_log.json       连续失败计数(防误杀)
 
 电视端入口(地址永远不变):
-  多仓入口 store.json: 点播仓(体检排序) + 我的直播仓
-  单仓入口 tvbox.json: 自检测直链接口 + 直播
+  多仓入口 store.json: 我的影视(自己那份, ads 生效) + 我的直播 + 前2外部仓
+  单仓入口 tvbox.json: 精选直链接口 + 直播 + ads 拦截
+
+v3 (2026-10-26): 导航仓重建清理版(multi/mN.json) —— 只装体检合格的子仓,
+  死子仓不再拖累整仓(电视加载导航不再弹"拉取配置失败");
+  香港台维持 v2 砍法(凤凰中文/凤凰资讯/RTHK32); 检测频率维持每天一次
+v4 (2026-10-26): 电视清单一票否决制 —— 完美仓(100%存活)优先凑前3,
+   不足时>=90分仓补位; 清理版多仓按最低子仓分算1个仓同台竞争(同为完美
+   时多仓优先, 自带每日重建容错); 删除"自动优选·直链检测"条目
+v5 (2026-10-27): 直播广告治理 + 每台单线路 ——
+   ① 运营源直接拒收(用户拍板): livekey/streamid/txiptv/bfgd/tsfile 等
+      URL特征 + 索引广告指纹(DISCONTINUITY拼接/15s+长段/首片超长起播贴片)
+      —— 2026-10-27 家中实看每台插广告实锤, 换血后运营线放量所致
+      (注: 长段/拼接判定 v6 已放宽为相对阈值, 见下⑦)
+   ② live.m3u 每台只输出排序第1的最佳线路(部分播放器不合并同名多行,
+      显示成"每台3个重复频道"); 备线全保留在 live.json(OSC多线路)
+v6 (2026-10-27): 代码评审修复(12处) ——
+   ① 凤凰卫视资讯台正则补"卫视"二字(原模式凤凰资讯永远匹配不上,
+      文档声称保留的台其实从没进过清单);
+   ② 直播候选按上游轮转取样(原来取插入序前16条 = 全是排第一的Guovin旧线,
+      vbskycn 活池的线路连实测机会都没有);
+   ③ 点播广告关键词加词边界(原 ad[s]? 会命中 load/download/broadcast/
+      shadow 里的"ad", 误判整仓插广告 → 直接剔除);
+   ④ 惩罚分降到门槛余量以内(0.15/0.12 > 余量0.10, "降分"实际等于"剔除");
+   ⑤ parse_m3u 支持 #EXTVLCOPT / #KODIPROP 的 UA 与 Referer;
+   ⑥ ffprobe/ffmpeg 真正带上 UA/Referer + rw_timeout(原来收下ua却不用);
+   ⑦ 索引广告指纹改相对判定(单次DISCONTINUITY多为重连、均匀20s慢切片不误杀);
+   ⑧ 依赖探测失败重试一次(一天只跑一轮, 抖动不该判死);
+   ⑨ 推荐质量检测并入线程池(原来在主线程串行, 每仓6个请求白等);
+   ⑩ FLAGS 的 mgtj 纠正为 mgtv(芒果);
+   ⑪ dead_log.json 每轮按当前接口池裁剪(否则只增不减, 天天提交把仓库喂胖);
+   ⑫ --sources 缺参数不再 IndexError
+
+v7 (2026-10-27): 工程质量修复(结构防御 + 去重 + 可测试) ——
+   ① 不可信配置零防御 → 补齐: 新增 as_list/as_dict/as_str + fetch_cfg,
+      仓配置的 sites/storeHouse/urls/spider/ext 任意畸形(sites 是 dict、
+      元素是字符串、storeHouse 是字符串)只跳过该项, 不再 AttributeError
+      让整轮归集崩掉(崩了当天不出新配置, 电视端一直吃旧配置);
+   ② 阶段级兜底: 归集/体检/直播任一阶段异常都用空数据继续出产物,
+      顶层再兜一层, 异常打堆栈 + 非零退出(半成品不会被 commit);
+   ③ 重复代码收口: cms_query(ac=list→videolist 取列表, 原4处)、
+      first_play_url(播放地址正则, 原4处)、ts_domain_spread(ts域名分散,
+      原2处逐字相同);
+   ④ 用显式 kind('store'/'nav') 取代"score is None 即导航仓"的隐含约定;
+      顺带修掉"无站点的空仓被当导航仓保留"的漏洞(现在判 0 分剔除);
+   ⑤ 代理/raw 域名集中为常量(原来 gh-proxy 等硬编码 14 处);
+   ⑥ norm_store_url / store_fingerprint 从内层闭包提到模块级(纯函数可测);
+   ⑦ dead_log 的接口与仓两份记录都按当轮池裁剪, 写文件前键排序(减少无谓 diff);
+   ⑧ 清理: import hashlib 归位到顶部; write_live 去掉从未使用的 repo 参数;
+      collect_live 里与版本号撞名的局部变量 v6 改名 ipv6_cnt; type 兼容 "3";
+   ⑨ 新增 tests/test_core.py: 20+ 项纯函数断言(频道匹配/广告指纹/m3u解析/
+      轮转取样/结构防御/惩罚分), 本地 1 秒跑完, 不必推 GitHub 等 10 分钟
+
+v8 (2026-10-27): 直播链路补强 ——
+   ① (已撤回) 曾补 7 个卫视; 用户明确"白名单是确定好的, 不要主动增加",
+      已全部还原, 频道数回到 59。白名单范围属于用户决策, 不由脚本扩;
+   ② "索引合法但测不出分辨率"的线原来是静默丢弃(日志都没有)。Actions
+      runner 在境外, 国内线路常"能开索引、拉不动分片", 这类线家里可能能看。
+      新增兜底层: 只有该台一条实测线都没有时才收(标 method=unverified),
+      绝不挤占实测通过的线, report 里标"未实测"并统计条数;
+   ③ 直播探测连接异常重试一次(点播依赖 test_dep 早有重试, 这里却一次就否,
+      标准不一致)。只重试连接异常, 403/404 这类确定性失败不重试。
+      兜底判定抽成 pick_live_urls() 便于单测;
+
+v9 (2026-10-27): 对齐"真正在电视机上发生的事情"(依据均为实测, 非推测) ——
+   问题: 之前所有检测都在测"源活着吗", 而用户在电视上遇到的是"没节目单/
+   搜不到片/某天突然全空"。这一版补的是后半段:
+   ① EPG 台名对齐: 实测 51zmt 的 e.xml(100频道) —— EPG 里叫 "CCTV1",
+      我们输出 "CCTV-1 综合", 归一化后 cctv1综合 ≠ cctv1, 19 个央视台
+      **精确匹配全部失败**, 电视上一直没有节目单。现按台映射 tvg-id/
+      tvg-name(海南卫视在 EPG 里还是旧名"旅游卫视", 凤凰→凤凰中文/资讯)。
+      54 个台对得上, 5 个 EPG 里确实没有的(湖南经视等)不写 tvg, 避免错配;
+      **频道范围不变, 仍是 59 个**;
+   ② 搜索纳入检测: searchable 一直是硬写的 1, 从没验证过。实测抓到
+      "首页能读 20 条、ac=detail&wd= 却报错"的接口, 这种进了清单就是
+      "能打开仓却什么都搜不到"。现在 check_one 多测一次搜索, 搜不到
+      (连得上但返回空)的不标 searchable; 网络异常算"不确定", 不误判;
+   ③ 熔断: 原先无条件覆盖产物 —— 全网抖动那天会写出空 store.json 并
+      commit, 电视第二天拉不到任何仓(这是唯一能让设备变砖的路径)。
+      现在本轮接口数或频道数比上一版**腰斩**就保留旧文件, 只更新 report
+      并在顶部报警; 熔断时不累加失败计数(本轮结果不可信);
+   ④ 大仓容错: 健康分=存活/总数, 完美线 100%。200 站的仓死 1 个=99.5%,
+      永远够不到完美线, 竞争不过 3 站全活的小仓 —— 而大仓才是内容最多的。
+      现在 >=30 站的仓允许死 1 个; 完美组内按内容量(站点数)优先;
+   ⑤ 直播码率: 1080p 但只有 800kbps 的"假高清"按分辨率排序会排第一,
+      画面反而不如 720p@3M。现在解析 master 的 BANDWIDTH, 每千像素
+      低于 LIVE_MIN_BPP 的降到备用层; 取不到码率的线不受影响(不猜测);
+   ⑥ 点播站点插广告由"整仓剔除"改"扣分"(1站扣4分, 最多扣8分):
+      个别站点插广告不等于整仓不能用, 与 v6 把降分改回真降分同源。
+      测试 28 → 36 项
+
+v10 (2026-10-27): 按用户提的六条要求逐条补 ——
+   用户原话: 台不要多(央视1-16 / 31省卫视 / 香港 / 湖南), 中文, 清晰度高,
+   不能插广告, 点播仓和线路不要太多, 全部自动更新。
+   ① ads 广告域名拦截(最大的缺口): tvbox.json 的 'ads' 一直是写死的空数组,
+      而上游每个仓都带了自己维护的广告域名黑名单 —— 解析了配置却从不取。
+      现在在 fetch_cfg 里顺手采集, 只取**多仓共识**(>=ADS_MIN_VOTES 个不同
+      仓都列出)才可信, 单仓列出的可能有误伤(把图床当广告)只进清单。
+      按用户要求"先看清单再启用": ADS_ENABLE 默认 False, 清单落在
+      ads_pool.json + report 第四节, 确认后改 True 才写进配置;
+   ② 自己那份配置进 store: 用户用 store.json 入口, 而 ads 只在"播放器直接
+      加载的那份配置"里生效, 3 个外部仓的 ads 由别人决定。现在 store.json
+      第一项就是"我的影视"(=tvbox.json), 广告拦截才真能生效。外部仓
+      3→2(STORE_TOP_N), 入口总数仍是 3 个;
+   ③ tvbox.json 站点上限 MAX_SITES=16: 原先是"存活几个写几个"(几十个),
+      电视上翻不完。截断时搜索不通的先淘汰 —— 能浏览但搜不到片的接口
+      留着只占位置;
+   ④ live.m3u 每台写满 3 条(v5 曾只写第1条): 用户拍板"每台3个源",
+      主线路卡住当天还有得换, 不必等第二天更新。代价是少数魔改播放器
+      会把一台显示成多个同名频道;
+   ⑤ 台单维持 59 个不动(用户确认"共59个"): 央视1-17+4K+5+ / 32卫视
+      (31省+深圳) / 香港3 / 湖南5。只加质量门槛, 不增不减;
+   ⑥ 测试 36 → 39 项
 
 用法:
   python check_sources.py [--sources 路径] [--gitee]
 """
 import base64
+import hashlib
 import json
 import os
 import re
@@ -32,6 +160,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -46,6 +175,17 @@ LIVE_JSON = os.path.join(HERE, 'live.json')
 LIVE_M3U = os.path.join(HERE, 'live.m3u')
 REPORT = os.path.join(HERE, 'report.md')
 DEADLOG = os.path.join(HERE, 'dead_log.json')
+ADS_POOL = os.path.join(HERE, 'ads_pool.json')   # v10: 广告域名清单(供人工过目)
+
+# ---- v7: 代理与 raw 域名集中定义 ----
+# 原来 gh-proxy.com 在 http_get / tv_url / norm_store_url / write_report 里
+# 各写一遍(共 14 处), 换镜像域名要改遍全文件; 现在只改这里
+RAW_HOST = 'raw.githubusercontent.com'
+GH_PROXY = 'https://gh-proxy.com/'
+GH_PROXY_ALT = 'https://ghproxy.net/'
+GH_MIRRORS = (GH_PROXY, GH_PROXY_ALT)
+PROXY_PREFIXES = (GH_PROXY, GH_PROXY_ALT, 'https://ghfast.top/',
+                  'https://mirror.ghproxy.com/', 'https://cdn.jsdelivr.net/gh/')
 
 TIMEOUT_API = 10      # 接口请求超时(秒)
 TIMEOUT_PLAY = 8      # 播放地址抽测超时(秒)
@@ -53,19 +193,43 @@ TIMEOUT_DEP = 8       # 仓依赖检测超时(秒)
 TIMEOUT_LIVE = 8      # 直播流拉取超时(秒)
 TIMEOUT_PROBE = 12    # ffmpeg/ffprobe 画质探测超时(秒)
 FAIL_LIMIT = 2        # 接口连续失败次数达到该值才剔除
-STORE_MIN_HEALTH = 0.9   # 仓健康分门槛: 90分 (宁缺勿滥)
+STORE_MIN_HEALTH = 0.9   # 补位仓门槛: 90分(凑不齐完美仓时用它补位)
+STORE_PERFECT = 1.0      # v4: 完美仓线=100%(一票否决: 死1个地址整仓出局)
 STORE_FAIL_LIMIT = 1     # 一轮即踢(每轮从sources重新归集, 下轮达标自动回来)
-STORE_TOP_N = 8          # 电视清单最多保留的高分仓数(少而精)
+STORE_TOP_N = 2          # v10: 外部仓留2个 —— 自己那份(tvbox.json)也进 store
+                         # 占1个位置, 合计仍是3个入口(v4 用户拍板"3个就好")
 MAX_WORKERS = 12
-FLAGS = ["qq", "iqiyi", "qiyi", "youku", "sohu", "letv", "mgtj", "bilibili"]
+# v10: tvbox.json 的站点数上限。原先是"存活几个写几个", 几十个站在电视上
+# 翻不完; 用户要求"线路不要太多"。搜索不通的排到后面, 优先被截断的是它们。
+MAX_SITES = 16
+FLAGS = ["qq", "iqiyi", "qiyi", "youku", "sohu", "letv", "mgtv", "bilibili"]
 
 # ---- v2: 点播画质抽测(点播也要高清) ----
 VOD_QUALITY_SAMPLE = 2   # 每仓抽几个CMS接口实测影片分辨率
 VOD_HD_MIN_H = 720       # 高清线: 高度<此值则降分
-VOD_QUALITY_PENALTY = 0.15  # 画质不达标的降分幅度
+VOD_QUALITY_PENALTY = 0.06  # v6: 0.15->0.06 画质不达标的降分幅度
+# 注意: STORE_MIN_HEALTH=0.90 => 存活余量只有0.10, 惩罚必须<0.10,
+# 否则"降分"实质等于"一票否决剔除"(v5 的 0.15/0.12 就是这么误杀的)
 
 # ---- v2: 首页推荐质量检测(首页推荐内容质量优化) ----
-REC_QUALITY_PENALTY = 0.12  # 首页空/海报挂 的降分幅度
+REC_QUALITY_PENALTY = 0.05  # v6: 0.12->0.05 首页空/海报挂 的降分幅度
+
+# ---- v9: 点播站点插广告改为扣分(原来是一票否决整仓剔除) ----
+# 一个站点插广告不代表整个仓不能用; 直接剔除会让内容最多的仓因为个别
+# 站点出局 —— 与 v6 把"降分"改回"真降分"是同一个道理
+AD_HITS_PENALTY = 0.04       # 每个插广告站点扣分
+AD_HITS_PENALTY_MAX = 0.08   # 最多扣这么多(3个站点以上扣满, 跌破门槛才剔除)
+
+# ---- v10: 播放器级广告域名拦截(ads 字段) ----
+# 病根: tvbox.json 的 'ads' 一直是写死的空数组。上游每个仓的配置里都带了
+# 自己维护的广告域名黑名单, 我们解析了配置却从不取这个字段 —— 等于白拿不用。
+# ads 是 TVBox 播放器级的域名拦截, 拦的是网页播放页里的弹窗/贴片域名,
+# 与"选哪个站"(已在做)是两层, 补上这层才能真少看到广告。
+# 但上游可能乱写(把图床域名塞进去会连海报一起拦掉), 所以只取**多仓共识**:
+# 至少 ADS_MIN_VOTES 个不同仓都列了才认为可信, 单仓列出的只进清单待人工确认。
+ADS_ENABLE = False       # 用户要求"先看清单再启用"; 看完确认后改 True
+ADS_MIN_VOTES = 2        # 至少几个仓同时列出才算共识
+ADS_MAX = 200            # 写进配置的条数上限(防某个仓库塞几千条拖慢播放器)
 UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                     'AppleWebKit/537.36 (KHTML, like Gecko) '
                     'Chrome/126.0.0.0 Safari/537.36'}
@@ -76,7 +240,19 @@ LIVE_KEEP = 3         # 每频道保留主线路数(高清层)
 LIVE_BACKUP_KEEP = 3  # v2: 备用层最多保留数(清晰度放宽 540p)
 LIVE_MIN_W, LIVE_MIN_H = 1280, 720   # 主线路高清底线: 720p(须 ffmpeg 实测确认)
 LIVE_BACKUP_MIN_H = 540   # v2: 备用线路门槛(540p), 保证有线路可换
+# v9: 码率下限(每千像素的 kbps)。1080p 只有 800kbps 时画面糊得不如 720p@3M,
+# 但按分辨率排序会把它排第一。只在 master playlist 声明了 BANDWIDTH 时判断,
+# 测不到码率的线不受影响(不猜测)。
+LIVE_MIN_BPP = 0.9
 LIVE_NO_IPV6 = True   # 用户家无 IPv6: 含 IPv6 地址的线路一律不要
+
+# ---- v5: 直播运营源拒收(广告治理, 用户拍板"直接拒收") ----
+# 运营型线路特征: "免费送线路换贴片广告"(换台/起播插15-30秒广告);
+# 2026-10-27 家中实看每台插广告实锤 —— 换血后 livekey/bfgd/txiptv 线放量
+AD_URL_PATS = ('livekey=', 'streamid=', 'key=txiptv', 'authid=',
+               '/bfgd/', '/tsfile/live/')
+AD_SEG_DUR = 15       # v6: 分片>=15s 且 >2.5x中位数 才算拼接长段
+AD_FIRST_DUR = 10     # 首片>=10s 且>3倍后续中位数 = 起播贴片特征
 
 # ---- 目录仓发现(自动找点播源) ----
 # D| 开头的行: 目录仓的 resources.json 地址, 自动提取其中 tvbox_config 类的
@@ -89,8 +265,6 @@ LIVE_EPG = 'http://epg.51zmt.top:8000/e.xml'
 SUB_DEPTH = 2          # 多仓子仓递归跟进深度(验到最后一级)
 SUB_TOTAL_LIMIT = 40   # 子仓跟进总量上限
 CMS_DEEP_LIMIT = 15    # 每仓最多深测的CMS接口数(实际调用验证内容)
-API_URL_HINTS = ('api', 'provide', 'vod', '.js', '.json', '.php',
-                 'collect', 'mxpro')
 
 # ffmpeg 探测工具定位(云端apt安装; 本地尝试 imageio_ffmpeg)
 FFPROBE_BIN = shutil.which('ffprobe')
@@ -102,9 +276,106 @@ if not (FFPROBE_BIN or FFMPEG_BIN):
     except Exception:
         pass
 
+# v6: 老版本 ffprobe 不认 -headers/-rw_timeout 这类输入选项, 一旦报
+# "Unrecognized option" 就永久降级为裸命令, 避免所有探测一起失败
+_PROBE_EXTRA_OK = True
+
 
 def log(m):
     print(m, flush=True)
+
+
+# ---------------- v7: 不可信配置的结构防御 ----------------
+# 防御原来只写在"网络不可达"上, 但仓配置是第三方不可信 JSON:
+# sites 写成 dict / 元素是字符串 / storeHouse 是字符串, 就会在归集阶段
+# AttributeError 整轮崩掉(当天不出新配置, 电视端一直吃旧配置)。
+# 以下三个归一化函数 + 逐处 isinstance 判断, 让任何畸形结构都只损失一个仓。
+
+def as_list(v):
+    """把不可信字段归一成 list: list原样; dict取values; 单值/字符串包一层"""
+    if isinstance(v, list):
+        return v
+    if isinstance(v, dict):
+        return list(v.values())
+    if v is None or v == '':
+        return []
+    return [v]
+
+
+def as_dict(v):
+    """不可信字段归一成 dict: 非 dict 一律给空 dict(调用方 .get 不再崩)"""
+    return v if isinstance(v, dict) else {}
+
+
+def as_str(v):
+    """不可信字段归一成 str: None->'', 数字/布尔转字符串"""
+    if isinstance(v, str):
+        return v
+    if v is None:
+        return ''
+    return str(v)
+
+
+def store_kind(cfg):
+    """仓类型(显式标注, 取代原来'score is None 就代表导航仓'的隐含约定):
+      store = 有站点的真仓, 参与健康分竞争
+      nav   = 只有子仓列表的多仓导航入口, 不打分
+    既没站点也没子仓的按 store 处理 —— 交给打分判死(空仓不该当导航留着)"""
+    cfg = as_dict(cfg)
+    if as_list(cfg.get('sites')):
+        return 'store'
+    if as_list(cfg.get('storeHouse')) or as_list(cfg.get('urls')):
+        return 'nav'
+    return 'store'
+
+
+def split_alias(s):
+    """'URL | 备注' -> (URL, 备注); 没有竖线则备注为空.
+    v7: sources.txt 的 @ / L| / D| 三种行都是这个格式, 原来各写一遍"""
+    rest = as_str(s).strip()
+    alias = ''
+    if '|' in rest:
+        u, alias = rest.split('|', 1)
+        rest, alias = u.strip(), alias.strip()
+    return rest, alias
+
+
+def norm_store_url(u):
+    """仓地址归一化: 剥代理前缀、去参数、去尾斜杠、host小写
+    v7: 从 collect() 内层闭包提到模块级 —— 纯函数, 测试才测得到"""
+    u = as_str(u).strip()
+    low = u.lower()
+    for pref in PROXY_PREFIXES:
+        if low.startswith(pref):
+            u = u[len(pref):]
+            low = u.lower()
+            if RAW_HOST not in u[:60] and not re.match(r'^https?://', u, re.I):
+                u = 'https://' + u
+            low = u.lower()
+    try:
+        p = urllib.parse.urlsplit(u)
+    except Exception:
+        return low.rstrip('/')
+    host = (p.hostname or '').lower()
+    path = (p.path or '').rstrip('/')
+    return (host + path) if path else host
+
+
+def store_fingerprint(cfg):
+    """仓内容指纹: 前5个站点的api/key排序后md5 —— 拦截换马甲的克隆仓
+    v7: 同样从闭包提到模块级, 并加结构防御"""
+    sites = as_list(as_dict(cfg).get('sites'))
+    keys = []
+    for s in sites[:5]:
+        if not isinstance(s, dict):
+            continue
+        k = as_str(s.get('api')) or as_str(s.get('key'))
+        if k:
+            keys.append(norm_store_url(k) if k.startswith('http') else k)
+    if not keys:
+        return None
+    keys.sort()
+    return hashlib.md5('|'.join(keys).encode('utf-8')).hexdigest()
 
 
 def norm_url(u):
@@ -131,10 +402,10 @@ def norm_url(u):
 
 
 def http_get(url, timeout, max_bytes=None, headers=None):
-    """GET; raw.githubusercontent 失败时自动走 gh-proxy 镜像重试"""
+    """GET; raw 域名失败时自动走镜像重试(v7: 镜像列表统一取自 GH_MIRRORS)"""
     tries = [url]
-    if re.match(r'^https?://raw\.githubusercontent\.com/', url):
-        tries += ['https://gh-proxy.com/' + url, 'https://ghproxy.net/' + url]
+    if re.match(r'^https?://%s/' % re.escape(RAW_HOST), url, re.I):
+        tries += [m + url for m in GH_MIRRORS]
     last = None
     for u in tries:
         try:
@@ -175,12 +446,63 @@ def fetch_json(url, timeout):
     return json.loads(stripped)
 
 
+# ---- v10: 广告域名采集 ----
+# 拉配置的入口只有 fetch_cfg 一处, 在这里顺手记一笔就不会漏(含子仓/孙仓)。
+# 键=归一化域名, 值=列过它的仓(用 host 当投票者), 同一仓的子仓只算一票。
+_ADS_VOTES = {}
+_ADS_RAW = {}
+
+
+def norm_ad_dom(x):
+    """ads 项可能是域名/URL/带通配的写法, 归一成 host 便于去重与统计"""
+    s = str(x).strip().lower()
+    s = re.sub(r'^[a-z]+://', '', s)
+    s = s.split('/')[0].split('?')[0].split('#')[0]
+    s = s.split(':')[0]
+    s = s.lstrip('*.')
+    return s if '.' in s else ''
+
+
+def note_ads(cfg, src):
+    a = cfg.get('ads')
+    if isinstance(a, str):
+        a = [a]
+    if not isinstance(a, list):
+        return
+    voter = urllib.parse.urlparse(src).netloc.lower() or src[:40]
+    for x in a:
+        d = norm_ad_dom(x)
+        if not d:
+            continue
+        _ADS_VOTES.setdefault(d, set()).add(voter)
+        _ADS_RAW.setdefault(d, set()).add(str(x).strip())
+
+
+def ads_consensus(min_votes=ADS_MIN_VOTES):
+    """返回 (共识域名, 单仓域名), 均按票数降序。
+    多仓共识才算可信 —— 单仓乱写图床域名会连海报一起拦掉的教训在上游很常见"""
+    con = sorted(((len(v), k) for k, v in _ADS_VOTES.items() if len(v) >= min_votes),
+                 key=lambda x: (-x[0], x[1]))
+    one = sorted(k for k, v in _ADS_VOTES.items() if len(v) < min_votes)
+    return [k for _, k in con], one
+
+
+def fetch_cfg(url, timeout):
+    """取一个仓配置: 必须是 JSON 对象 —— 数组/字符串/数字一律当失败
+    v7: 防止 json 顶层结构异常(如返回 list)一路传到 .get() 才崩"""
+    j = fetch_json(url, timeout)
+    if not isinstance(j, dict):
+        raise RuntimeError('配置不是JSON对象(%s)' % type(j).__name__)
+    note_ads(j, url)      # v10: 顺手采广告域名, 供 ads 白名单用
+    return j
+
+
 def tv_url(u):
-    """电视端可达地址: raw.githubusercontent 需加 gh-proxy 前缀"""
-    if u.startswith('https://raw.githubusercontent.com') or \
-            u.startswith('http://raw.githubusercontent.com'):
-        return 'https://gh-proxy.com/' + u
-    return u
+    """电视端可达地址: raw 域名需加代理前缀(电视盒子直连 raw 基本拉不动)"""
+    ul = as_str(u)
+    if ul.startswith('https://' + RAW_HOST) or ul.startswith('http://' + RAW_HOST):
+        return GH_PROXY + ul
+    return ul
 
 
 def join_api(base, params):
@@ -188,25 +510,69 @@ def join_api(base, params):
     return base + sep + params
 
 
+PLAY_URL_RE = re.compile(r'\$(https?://[^#\s]+)')
+
+
+def first_play_url(vod, m3u8_only=False):
+    """从 vod_play_url 取第一个播放地址, 无则 None
+    v7: 这段正则原来在 check_one / deep_check_cms_vod / vod_quality_probe
+    里各写一遍(共4处), 抽成一处"""
+    play = as_str(as_dict(vod).get('vod_play_url'))
+    for m in PLAY_URL_RE.finditer(play):
+        u = m.group(1)
+        if m3u8_only and '.m3u8' not in u.split('?')[0]:
+            continue
+        return u
+    return None
+
+
+def cms_query(api, timeout=TIMEOUT_API):
+    """查一个苹果CMS接口: 返回 (有分类, 视频列表[dict]).
+    先 ac=list, 无内容再 ac=videolist&pg=1(部分接口 list 为空).
+    v7: 结构非预期(list 是 dict / 元素是字符串)一律当空, 不再 AttributeError"""
+    j = fetch_json(join_api(api, 'ac=list'), timeout)
+    if not isinstance(j, dict):
+        raise RuntimeError('接口返回非JSON对象')
+    has_cls = bool(as_list(j.get('class')))
+    vods = [v for v in as_list(j.get('list')) if isinstance(v, dict)]
+    if not vods:
+        j2 = fetch_json(join_api(api, 'ac=videolist&pg=1'), timeout)
+        if isinstance(j2, dict):
+            vods = [v for v in as_list(j2.get('list')) if isinstance(v, dict)]
+    return has_cls, vods
+
+
+SEARCH_PROBE_KW = '爱情'   # 通用词: 任何有片库的接口都该搜出结果
+
+
+def cms_search_ok(api, timeout=TIMEOUT_API):
+    """v9: 搜索可用性 —— 用户绝大多数时间在搜索, 而 searchable 一直是硬写的 1。
+    2026-10-27 实测: 确实存在"首页能读 20 条、ac=detail&wd= 直接报错"的接口,
+    这种接口进了清单, 电视上能打开仓却什么都搜不到。
+    返回 True/False; 网络异常返回 None(结果不确定, 不当作坏)"""
+    try:
+        j = fetch_json(join_api(
+            api, 'ac=detail&wd=' + urllib.parse.quote(SEARCH_PROBE_KW)),
+            timeout)
+    except Exception:
+        return None
+    if not isinstance(j, dict):
+        return None
+    return bool([v for v in as_list(j.get('list')) if isinstance(v, dict)])
+
+
 def check_one(api):
-    """检测单个接口, 返回总耗时毫秒; 失败抛异常(带原因)"""
+    """检测单个接口, 返回 (总耗时毫秒, 搜索是否可用)
+    搜索单独计时, 不计入接口本身的延迟"""
     t0 = time.time()
-    j = fetch_json(join_api(api, 'ac=list'), TIMEOUT_API)
-    classes = j.get('class') or []
-    vods = j.get('list') or []
-    if not classes and not vods:
+    has_cls, vods = cms_query(api)
+    if not has_cls and not vods:
         raise RuntimeError('接口返回空数据')
     if not vods:
-        j2 = fetch_json(join_api(api, 'ac=videolist&pg=1'), TIMEOUT_API)
-        vods = j2.get('list') or []
-        if not vods:
-            raise RuntimeError('无可用视频数据')
-    sample = vods[0]
-    play = str(sample.get('vod_play_url') or '')
-    m = re.search(r'\$(https?://[^#\s]+)', play)
-    if not m:
+        raise RuntimeError('无可用视频数据')
+    purl = first_play_url(vods[0])
+    if not purl:
         raise RuntimeError('未取到播放地址')
-    purl = m.group(1)
     try:
         st, _ = http_get(purl, TIMEOUT_PLAY, max_bytes=2048)
         if st != 200:
@@ -215,7 +581,8 @@ def check_one(api):
         raise
     except Exception as e:
         raise RuntimeError('播放地址不可达: %s' % e)
-    return int((time.time() - t0) * 1000)
+    ms = int((time.time() - t0) * 1000)
+    return ms, cms_search_ok(api)
 
 
 # ---------------- 仓体检 ----------------
@@ -251,18 +618,32 @@ def extract_api_like_urls(obj, depth=0):
     return urls
 
 
-def deep_check_cms(api_url):
-    """CMS接口深测: 实际调用验证有真实内容(分类/视频数据)"""
-    try:
-        j = fetch_json(join_api(api_url, 'ac=list'), TIMEOUT_API)
-        return bool(j.get('class') or j.get('list'))
-    except Exception:
-        return False
-
-
 AD_KEYWORDS = re.compile(
-    r'ad[s]?[-_.]?|advert|guangg|promo|banner|tuijian|preload|creative',
-    re.I)
+    r'(?:^|[/_.\-])(?:ads?|adv|advert\w*|guanggao|guangg|promo\w*'
+    r'|banner|tuijian|preload|creative)(?:[/_.\-]|$)', re.I)
+# v6: 必须要求词边界. 旧的 r'ad[s]?[-_.]?' 会命中 load / download /
+# broadcast / shadow / head 里的 "ad" —— 一个CDN路径带 load 就把整仓
+# 判成"插广告"并直接剔除, 误杀代价太大
+
+
+def ts_domain_spread(txt):
+    """ts 片段域名分散度: 返回 (是否分散, 主域名占比).
+    正常单CDN的ts都在同一域名下; 拼广告会把片段打到别的域名。
+    v7: vod_has_ads 与 live_has_ads 里这段统计原来逐字重复两份, 抽成一处"""
+    ts_urls = [u for u in re.findall(r'^(https?://\S+)$', txt, re.M)
+               if '.ts' in u.split('?')[0]]
+    if len(ts_urls) < 4:
+        return False, 1.0
+    domains = {}
+    for u in ts_urls:
+        try:
+            d = urllib.parse.urlsplit(u).netloc
+        except Exception:
+            d = '?'
+        domains[d] = domains.get(d, 0) + 1
+    main = max(domains.values())
+    ratio = main / len(ts_urls)
+    return (len(domains) > 1 and ratio < 0.85), ratio
 
 
 def vod_has_ads(play_url):
@@ -276,23 +657,13 @@ def vod_has_ads(play_url):
         txt = data.decode('utf-8', 'ignore')
         if '#EXTM3U' not in txt[:200]:
             return None
-        ts = re.findall(r'^(https?://\S+\.ts\S*)$', txt, re.M)
-        if not ts:
-            rel = re.findall(r'^(\S+\.ts)\s*$', txt, re.M)
-            if rel:
-                return None  # 相对路径片段: 单一来源, 无域名可判
-            return None
-        if len(ts) >= 4:
-            domains = {}
-            for u in ts:
-                try:
-                    d = urllib.parse.urlsplit(u).netloc
-                except Exception:
-                    d = '?'
-                domains[d] = domains.get(d, 0) + 1
-            main = max(domains.values()) if domains else 0
-            if len(domains) > 1 and main / len(ts) < 0.85:
-                return True  # 片段域名分散: 疑似广告插入
+        if not re.search(r'^https?://\S+\.ts', txt, re.M):
+            return None   # 相对路径片段: 单一来源, 无域名可判
+        spread, _ = ts_domain_spread(txt)
+        if spread:
+            return True   # 片段域名分散: 疑似广告插入
+        ts = [u for u in re.findall(r'^(https?://\S+)$', txt, re.M)
+              if '.ts' in u.split('?')[0]]
         if AD_KEYWORDS.search(' '.join(ts[:20])):
             return True   # 片段名带广告特征
         return False
@@ -304,37 +675,29 @@ def deep_check_cms_vod(api_url):
     """CMS深测升级: 验证有真实内容 + 抽真实视频测广告.
     返回 (有内容, 无广告); 广告无法判定时按无广告处理"""
     try:
-        j = fetch_json(join_api(api_url, 'ac=list'), TIMEOUT_API)
+        has_cls, vods = cms_query(api_url)
     except Exception:
         return False, True
-    vods = j.get('list') or []
-    if not vods:
-        try:
-            j2 = fetch_json(join_api(api_url, 'ac=videolist&pg=1'), TIMEOUT_API)
-            vods = j2.get('list') or []
-        except Exception:
-            vods = []
-    if not (j.get('class') or vods):
+    if not (has_cls or vods):
         return False, True   # 没内容
     # 抽前几个视频测广告
-    checked = 0
     for v in vods[:3]:
-        play = str(v.get('vod_play_url') or '')
-        m = re.search(r'\$(https?://[^#\s]+)', play)
-        if not m:
+        u = first_play_url(v)
+        if not u:
             continue
-        has_ads = vod_has_ads(m.group(1))
-        if has_ads is True:
+        if vod_has_ads(u) is True:
             return True, False  # 有内容但插广告
-        checked += 1
     return True, True
 
 
 def site_deps(cfg, base_url=''):
     """解析仓内每个站点: 返回 (全局jar, [{site,deps,cms}]).
     cms = 苹果CMS接口(深测); deps = 其他依赖URL;
-    相对路径jar(./x.jar)拼基目录转绝对地址 — 验到最后一级"""
-    global_jar = str(cfg.get('spider') or '')
+    相对路径jar(./x.jar)拼基目录转绝对地址 — 验到最后一级
+    v7: cfg / sites / 单站点 全部按不可信结构处理 —— sites 是 dict 或元素
+    是字符串时只跳过该项, 不再让整轮归集崩掉"""
+    cfg = as_dict(cfg)
+    global_jar = as_str(cfg.get('spider'))
     jar_clean = global_jar.split(';')[0]
     if jar_clean.startswith('http'):
         global_jar = jar_clean
@@ -344,15 +707,19 @@ def site_deps(cfg, base_url=''):
     else:
         global_jar = ''
     per = []
-    for s in (cfg.get('sites') or []):
+    for s in as_list(cfg.get('sites')):
+        if not isinstance(s, dict):
+            continue          # v7: 元素是字符串/数字 → 跳过, 不计入分母
         deps = set()
-        api = str(s.get('api') or '')
-        jar = str(s.get('jar') or '')
+        api = as_str(s.get('api'))
+        jar = as_str(s.get('jar'))
         ext = s.get('ext')
         cms = None
         if api.startswith('http'):
             u = api.split(';')[0]
-            if s.get('type') == 3 and not u.split('?')[0].rstrip('/').endswith('.js'):
+            # v7: type 可能是 "3"(字符串), 不能只认 int 3
+            if as_str(s.get('type')).strip() == '3' and \
+                    not u.split('?')[0].rstrip('/').endswith('.js'):
                 cms = u   # CMS接口: 走深测(实际调用验证内容)
             else:
                 deps.add(u)
@@ -373,27 +740,32 @@ def site_deps(cfg, base_url=''):
 
 
 def test_dep(url):
-    try:
-        st, _ = http_get(url, TIMEOUT_DEP, max_bytes=2048)
-        return st == 200
-    except Exception:
-        return False
+    """v6: 失败重试一次. 一天只跑一轮 + 完美仓一票否决(0.10余量),
+    一次网络抖动就能让整仓当天出局, 代价太大"""
+    for i in range(2):
+        try:
+            st, _ = http_get(url, TIMEOUT_DEP, max_bytes=2048)
+            if st == 200:
+                return True
+        except Exception:
+            pass
+        if i == 0:
+            time.sleep(0.4)
+    return False
 
 
 def vod_quality_probe(api_url):
     """v2: 点播画质抽测 —— 从CMS接口取一部真实影片的m3u8, ffmpeg实测分辨率.
     返回 (高度, None); 失败/测不出返回 (0, 原因)"""
     try:
-        j = fetch_json(join_api(api_url, 'ac=videolist&pg=1'), TIMEOUT_API)
+        _, vods = cms_query(api_url)
     except Exception as e:
         return 0, str(e)[:40]
-    vods = j.get('list') or []
     for v in vods[:3]:
-        play = str(v.get('vod_play_url') or '')
-        m = re.search(r'\$(https?://[^#\s]+\.m3u8[^#\s]*)', play)
-        if not m:
+        u = first_play_url(v, m3u8_only=True)
+        if not u:
             continue
-        w, h = ffprobe_res(m.group(1))
+        w, h = ffprobe_res(u)
         if h:
             return h, None
     return 0, '无可测m3u8'
@@ -406,13 +778,12 @@ def recommend_quality_probe(cms_apis):
         return 0, 1
     api = cms_apis[0]
     try:
-        j = fetch_json(join_api(api, 'ac=videolist&pg=1'), TIMEOUT_API)
+        _, vods = cms_query(api)
     except Exception:
         return 0, 1
-    vods = j.get('list') or []
     if not vods:
         return 0, 1
-    pics = [str(v.get('vod_pic') or '') for v in vods[:5]]
+    pics = [as_str(v.get('vod_pic')) for v in vods[:5]]
     pic_urls = [p for p in pics if p.startswith('http')]
     if not pic_urls:
         return len(vods), 1
@@ -428,12 +799,21 @@ def recommend_quality_probe(cms_apis):
 
 
 def assess_stores(stores):
-    """给每个仓算健康分(含CMS接口深测: 实际调用验证内容)"""
+    """给每个仓算健康分(含CMS接口深测: 实际调用验证内容)
+    v7: 单个仓的结构异常只跳过它自己, 不再让整轮体检崩掉"""
     all_deps = set()
     parsed = []
     for st in stores:
-        cfg = st.get('cfg') or {}
-        gjar, per = site_deps(cfg, st.get('url') or '')
+        kind = 'store'
+        gjar, per = '', []
+        try:
+            cfg = as_dict(st.get('cfg'))
+            kind = store_kind(cfg)
+            gjar, per = site_deps(cfg, as_str(st.get('url')))
+        except Exception as e:
+            log('[仓体检跳过] %s -> %s: %s' % (
+                as_str(st.get('name'))[:16], type(e).__name__, e))
+        st['kind'] = kind
         parsed.append((st, gjar, per))
         for e in per:
             all_deps.update(e['deps'])
@@ -475,19 +855,31 @@ def assess_stores(stores):
     for st, gjar, per in parsed:
         cms_list = [e['cms'] for e in per if e['cms']][:VOD_QUALITY_SAMPLE]
         if cms_list:
-            q_tasks.append((st['url'], cms_list))
+            q_tasks.append((as_str(st.get('url')), cms_list))
     if q_tasks:
         log('画质抽测: %d 个仓 (抽影片实测分辨率, <720p 降分; 检首页推荐质量)...' % len(q_tasks))
         with ThreadPoolExecutor(MAX_WORKERS) as ex:
-            futs = {}
-            for surl, cms_list in q_tasks:
-                futs[ex.submit(vod_quality_probe, cms_list[0])] = surl
-                rec_res[surl] = recommend_quality_probe(cms_list)
-            for fu in as_completed(futs):
-                quality_res[futs[fu]] = fu.result()
+            # v6: 推荐质量检测原来在主线程串行跑(每仓 1+5 个请求, 6s 超时),
+            # 40 个仓就是几分钟白等; 现在一并丢进线程池
+            q_futs = {ex.submit(vod_quality_probe, cl[0]): surl
+                      for surl, cl in q_tasks}
+            r_futs = {ex.submit(recommend_quality_probe, cl): surl
+                      for surl, cl in q_tasks}
+            for fu in as_completed(q_futs):
+                try:
+                    quality_res[q_futs[fu]] = fu.result()
+                except Exception:
+                    pass
+            for fu in as_completed(r_futs):
+                try:
+                    rec_res[r_futs[fu]] = fu.result()
+                except Exception:
+                    pass
 
     out = []
     for st, gjar, per in parsed:
+        surl = as_str(st.get('url'))
+        kind = st.get('kind') or 'store'
         alive_cnt, total, unknown, deep, ad_hits = 0, 0, 0, 0, 0
         for e in per:
             if e['cms']:
@@ -505,14 +897,19 @@ def assess_stores(stores):
             total += 1
             if all(dep_ok.get(d) for d in deps):
                 alive_cnt += 1
-        score = (alive_cnt / total) if total else None
+        if total:
+            score = alive_cnt / total
+        else:
+            # v7: 导航仓不打分; 无站点的"空仓"给 0 分判死
+            # (旧版 score=None 顺手把它当导航仓保留, 是个隐性漏洞)
+            score = None if kind == 'nav' else 0.0
         # v2: 画质抽测降分 —— 抽的影片实测 <720p, 该仓降 VOD_QUALITY_PENALTY
-        q_hit, q_note = quality_res.get(st['url'], (None, ''))
+        q_hit, q_note = quality_res.get(surl, (None, ''))
         if q_hit is not None and score is not None and 0 < q_hit < VOD_HD_MIN_H:
             score = max(0.0, score - VOD_QUALITY_PENALTY)
             q_note = '抽测影片%d(<720p)' % q_hit
         # v2: 推荐质量降分 —— 首页空/海报挂率高的仓降分
-        rec_n, rec_bad = rec_res.get(st['url'], (None, None))
+        rec_n, rec_bad = rec_res.get(surl, (None, None))
         rec_note = ''
         if rec_n is not None and score is not None and rec_bad is not None:
             if rec_n == 0:
@@ -522,12 +919,12 @@ def assess_stores(stores):
                 score = max(0.0, score - REC_QUALITY_PENALTY / 2)
                 rec_note = '海报挂率%d%%' % int(rec_bad * 100)
         jar_ok = dep_ok.get(gjar) if gjar else None
-        out.append(dict(st, score=score, alive=alive_cnt, total=total,
-                        unknown=unknown, deep=deep, ad_hits=ad_hits,
-                        jar_ok=jar_ok,
+        out.append(dict(st, kind=kind, score=score, alive=alive_cnt,
+                        total=total, unknown=unknown, deep=deep,
+                        ad_hits=ad_hits, jar_ok=jar_ok,
                         quality_h=q_hit if q_hit is not None else '',
                         rec_note=rec_note or q_note))
-        pct = ('%d%%' % (score * 100)) if score is not None else '未测'
+        pct = ('%d%%' % (score * 100)) if score is not None else '入口'
         ad_txt = ', 广告%d' % ad_hits if ad_hits else ''
         extra = ''
         if q_note:
@@ -535,7 +932,7 @@ def assess_stores(stores):
         if rec_note:
             extra += ', 推荐降分'
         log('[仓体检] %-16s 分数%s (存活%d/%d含深测%d, 未测%d%s%s)' % (
-            (st.get('name') or '')[:16], pct, alive_cnt, total, deep,
+            as_str(st.get('name'))[:16], pct, alive_cnt, total, deep,
             unknown, ad_txt, extra))
     return out
 
@@ -544,12 +941,42 @@ def assess_stores(stores):
 
 LIVE_GROUPS = ['央视', '卫视', '中国香港', '湖南']
 
+# ---- v9: EPG 台名对齐(不新增任何频道, 只让已有台名对得上) ----
+# 病根: live.m3u 只声明了 x-tvg-url, 但台名是我们自己起的("CCTV-1 综合"),
+# 而 EPG 里叫 "CCTV1" —— 归一化后 cctv1综合 与 cctv1 永不相等。
+# 2026-10-27 实测 51zmt 的 e.xml(100个频道): 19 个央视台精确匹配全部失败,
+# 电视上这些台一个节目单都没有。这里补 tvg-id/tvg-name 做精确对齐。
+EPG_ALIAS = {
+    '海南卫视': '旅游卫视',          # EPG 里仍用旧名
+    '凤凰卫视中文台': '凤凰中文',
+    '凤凰卫视资讯台': '凤凰资讯',
+    'CCTV-4K 超高清': 'CCTV4K',
+    'CCTV-5+ 体育赛事': 'CCTV5+',
+}
+# EPG 里确实没有的台: 不输出 tvg 属性 —— 写错名字反而可能被播放器
+# 模糊匹配到别的台, 显示成别的台的节目单, 比没有更糟
+EPG_NONE = ('RTHK 港台电视32', '金鹰纪实', '湖南经视',
+            '湖南都市', '湖南国际')
+
+
+def epg_name(ch_name):
+    """台名 -> EPG 中的 display-name; 无对应返回 None"""
+    if ch_name in EPG_NONE:
+        return None
+    if ch_name in EPG_ALIAS:
+        return EPG_ALIAS[ch_name]
+    m = re.match(r'^CCTV-(\d+) ', ch_name)
+    if m:
+        return 'CCTV' + m.group(1)
+    return ch_name
+
 
 def build_whitelist():
     wl = []
 
     def add(name, group, patterns):
         wl.append({'name': name, 'group': group,
+                   'epg': epg_name(name),
                    'patterns': [re.compile(p, re.I) for p in patterns]})
 
     # 央视: 4K/5+ 先行, 避免被 CCTV4/CCTV5 误吞
@@ -607,7 +1034,9 @@ def build_whitelist():
     #   移除: 翡翠台(粤语)/明珠台(英语)/HOY(粤语)/RTHK31(粤语)
     hks = [
         ('凤凰卫视中文台', r'凤凰卫视?中文|phoenixchinese'),
-        ('凤凰卫视资讯台', r'凤凰资讯|phoenixinfonews'),
+        # v6: 补"卫视" —— 归一化后是"凤凰卫视资讯台", 旧模式"凤凰资讯"隔着
+        # "卫视"永远匹配不上, 文档声称保留的资讯台从没进过清单
+        ('凤凰卫视资讯台', r'凤凰(卫视)?资讯|phoenixinfo'),
         ('RTHK 港台电视32', r'rthk\w*32|港台(电视|電視)?32'),
     ]
     for name, pat in hks:
@@ -642,47 +1071,107 @@ def match_channel(raw_name, wl):
 
 
 def parse_m3u(text):
-    """解析m3u, 返回 [{name,ua,group,url}]"""
+    """解析m3u, 返回 [{name,ua,ref,group,url}]
+    v6: 支持 #EXTVLCOPT / #KODIPROP 里的 UA 与 Referer —— iptv-org、Guovin
+    这类大池大量线路靠这两个头才肯发流, 不认就一直测不出分辨率被丢弃"""
     items = []
     cur = None
+    opt = {}
+
+    def _set_opt(key, val):
+        k = key.strip().lower()
+        v = val.strip().strip('"')
+        if k in ('http-user-agent', 'user-agent', 'http-useragent'):
+            opt['ua'] = v
+        elif k in ('http-referrer', 'http-referer', 'referer', 'referrer'):
+            opt['ref'] = v
+
     for ln in text.splitlines():
         ln = ln.strip()
         if not ln:
             continue
-        if ln.startswith('#EXTINF'):
+        up = ln.upper()
+        if up.startswith('#EXTINF'):
             head, _, name = ln.partition(',')
             name = name.strip()
-            ua = re.search(r'http-user-agent="([^"]+)"', head)
-            grp = re.search(r'group-title="([^"]+)"', head)
+            ua = re.search(r'http-user-agent="([^"]+)"', head, re.I)
+            grp = re.search(r'group-title="([^"]+)"', head, re.I)
             cur = {'name': name,
                    'ua': ua.group(1) if ua else None,
                    'group': grp.group(1) if grp else ''}
+            opt = {}
+        elif up.startswith('#EXTVLCOPT:'):
+            k, _, v = ln[11:].partition('=')
+            _set_opt(k, v)
+        elif up.startswith('#KODIPROP:'):
+            k, _, v = ln[10:].partition('=')
+            if 'useragent' in k.lower().replace('-', '').replace('_', ''):
+                opt['ua'] = v.strip().strip('"')
+            else:
+                _set_opt(k.split(':')[-1], v)
         elif ln.startswith('#'):
             continue
         elif cur is not None:
+            cur['ua'] = cur.get('ua') or opt.get('ua')
+            cur['ref'] = opt.get('ref')
             cur['url'] = ln
             items.append(cur)
             cur = None
+            opt = {}
     return items
 
 
-def ffprobe_res(url, ua=None):
-    """用 ffprobe/ffmpeg 探测真实分辨率: (w,h) 或 (0,0)"""
+def _ffprobe_cmd(extra, url):
+    cmd = [FFPROBE_BIN, '-v', 'error']
+    if extra:
+        cmd += ['-rw_timeout', str(TIMEOUT_PROBE * 1000 * 1000)]
+        hdr = []
+        if extra.get('ref'):
+            hdr.append('Referer: %s' % extra['ref'])
+        if extra.get('ua'):
+            hdr.append('User-Agent: %s' % extra['ua'])
+        if hdr:
+            cmd += ['-headers', ''.join(h + '\r\n' for h in hdr)]
+    cmd += ['-select_streams', 'v:0', '-show_entries',
+            'stream=width,height', '-of', 'csv=p=0', url]
+    return cmd
+
+
+def ffprobe_res(url, ua=None, ref=None):
+    """用 ffprobe/ffmpeg 探测真实分辨率: (w,h) 或 (0,0)
+    v6: 真的把 UA/Referer 传给探测器. v5 收下 ua 却在函数里从没用过,
+    导致"必须伪装UA才发流"的线路一律测不出分辨率 → 被当成低质线丢弃"""
+    global _PROBE_EXTRA_OK
     if FFPROBE_BIN:
-        cmd = [FFPROBE_BIN, '-v', 'error', '-select_streams', 'v:0',
-               '-show_entries', 'stream=width,height', '-of', 'csv=p=0', url]
-        try:
-            out = subprocess.run(cmd, capture_output=True, text=True,
-                                 timeout=TIMEOUT_PROBE).stdout.strip()
-            m = re.search(r'(\d{2,4})\s*,\s*(\d{2,4})', out)
+        want_extra = bool(_PROBE_EXTRA_OK and (ua or ref))
+        for with_extra in ([True, False] if want_extra else [False]):
+            cmd = _ffprobe_cmd({'ua': ua, 'ref': ref} if with_extra else None,
+                               url)
+            try:
+                p = subprocess.run(cmd, capture_output=True, text=True,
+                                   timeout=TIMEOUT_PROBE)
+            except subprocess.TimeoutExpired:
+                return 0, 0      # 超时就是线慢/死, 不再重试
+            except Exception:
+                continue
+            if with_extra and 'Unrecognized option' in (p.stderr or ''):
+                _PROBE_EXTRA_OK = False   # 老版本: 永久降级后重试
+                continue
+            m = re.search(r'(\d{2,4})\s*,\s*(\d{2,4})', p.stdout or '')
             if m:
                 return int(m.group(1)), int(m.group(2))
-        except Exception:
-            pass
         return 0, 0
     if FFMPEG_BIN:
-        cmd = [FFMPEG_BIN, '-hide_banner', '-i', url, '-t', '0',
-               '-f', 'null', '-']
+        cmd = [FFMPEG_BIN, '-hide_banner']
+        if _PROBE_EXTRA_OK:
+            hdr = []
+            if ref:
+                hdr.append('Referer: %s' % ref)
+            if ua:
+                hdr.append('User-Agent: %s' % ua)
+            if hdr:
+                cmd += ['-headers', ''.join(h + '\r\n' for h in hdr)]
+        cmd += ['-i', url, '-t', '0', '-f', 'null', '-']
         try:
             p = subprocess.run(cmd, capture_output=True, text=True,
                                timeout=TIMEOUT_PROBE)
@@ -706,69 +1195,140 @@ def is_ipv6_url(u):
     return ':' in host
 
 
+def is_ad_url(u):
+    """v5: 运营源URL特征 —— livekey/streamid/txiptv/bfgd/tsfile等参数或路径.
+    这类"免费线路"以起播/换台贴片广告变现(2026-10-27家中实看实锤),
+    用户拍板直接拒收: 不实测不占候选配额, 收录阶段即剔除"""
+    ul = u.lower()
+    return any(p in ul for p in AD_URL_PATS)
+
+
+def live_index_ads(txt):
+    """v6: m3u8索引广告指纹 —— 相对判定, 不误杀均匀切片/单次重连:
+    ① DISCONTINUITY 出现 >=2 次: 流内多处拼接 = 插广告的强信号;
+       单次多为编码器重连或节目切换(官方源也常见), 放行;
+    ② 某分片 >=15s 且 >2.5x中位数: 拼入广告段会突兀变长;
+       均匀20s的慢切片直播中位数同为20s, 不触发(旧版一律拒收);
+    ③ 首片 >=10s 且 >3x中位数: 起播贴片特征.
+    注: 只取当前窗口(通常3-6段), 判定不了的情况宁可放行, 次日会再测一遍"""
+    if txt.count('DISCONTINUITY') >= 2:
+        return True
+    durs = [float(m) for m in re.findall(r'#EXTINF:([\d.]+)', txt)]
+    if len(durs) >= 3:
+        med = sorted(durs)[len(durs) // 2]
+        if med > 0 and any(d >= AD_SEG_DUR and d > 2.5 * med for d in durs):
+            return True
+        if durs[0] >= AD_FIRST_DUR and med > 0 and durs[0] > 3 * med:
+            return True
+    return False
+
+
 def live_has_ads(txt):
     """启发式广告检测: m3u8媒体清单里ts片段域名分散(主域名占比低)疑插广告
-    只能测静态广告, 播放中动态插入的测不出"""
-    ts_urls = [u for u in re.findall(r'^(https?://\S+)$', txt, re.M)
-               if '.ts' in u.split('?')[0]]
-    if len(ts_urls) < 4:
-        return False
-    domains = {}
-    for u in ts_urls:
-        try:
-            d = urllib.parse.urlsplit(u).netloc
-        except Exception:
-            d = '?'
-        domains[d] = domains.get(d, 0) + 1
-    if len(domains) < 2:
-        return False
-    main_cnt = max(domains.values())
-    return main_cnt / len(ts_urls) < 0.85
+    只能测静态广告, 播放中动态插入的测不出
+    v7: 统计逻辑与 vod_has_ads 共用 ts_domain_spread()"""
+    spread, _ = ts_domain_spread(txt)
+    return spread
 
 
-def probe_live(url, ua=None):
+def probe_live(url, ua=None, ref=None):
     """直播线路体检: 返回 dict(ok,w,h,method,ms)
     清晰度以 ffmpeg 实测为准; master声明仅在ffprobe失败时佐证;
-    名字标签一律不作为画质依据(宁缺勿滥)"""
+    名字标签一律不作为画质依据(宁缺勿滥)
+    v6: 补 ref(Referer) —— 部分源校验来源, 不带就 403"""
     t0 = time.time()
     headers = dict(UA)
     if ua:
         headers['User-Agent'] = ua
-    try:
-        st, data = http_get(url, TIMEOUT_LIVE, max_bytes=65536, headers=headers)
-    except Exception:
-        return {'ok': False, 'w': 0, 'h': 0, 'method': '', 'ms': 0}
+    if ref:
+        headers['Referer'] = ref
+    # v8: 连接异常重试一次再判死 —— 直播线是所有检测里最容易抖动的
+    # (点播依赖 test_dep 早有重试, 这里却是一次就否, 标准不一致)。
+    # 只重试"连接异常", 403/404 这类确定性失败不重试, 不浪费时间。
+    st, data = 0, b''
+    for attempt in range(2):
+        try:
+            st, data = http_get(url, TIMEOUT_LIVE, max_bytes=65536,
+                                headers=headers)
+            break
+        except Exception:
+            if attempt:
+                return {'ok': False, 'w': 0, 'h': 0, 'method': '', 'ms': 0}
+            time.sleep(0.4)
     ms = int((time.time() - t0) * 1000)
     if st != 200:
         return {'ok': False, 'w': 0, 'h': 0, 'method': '', 'ms': ms}
     head = data[:200].decode('utf-8', 'ignore')
     if '#EXTM3U' in head:
         txt = data.decode('utf-8', 'ignore')
-        # 广告启发式: ts域名分散拒收
-        if live_has_ads(txt):
+        base = {'ok': True, 'w': 0, 'h': 0, 'method': '', 'ms': ms,
+                'hls': True}   # v8: 标记"索引合法", 供兜底层识别
+        # 广告启发式: ts域名分散拒收; v5: 索引广告指纹(拼接/长段/首片贴片)拒收
+        if live_has_ads(txt) or live_index_ads(txt):
             return {'ok': False, 'w': 0, 'h': 0, 'method': 'ads', 'ms': ms}
         master_res = None
+        master_kbps = 0
         if '#EXT-X-STREAM-INF' in txt:
-            best = (0, 0)
-            for m in re.finditer(r'RESOLUTION=(\d+)x(\d+)', txt):
-                w, h = int(m.group(1)), int(m.group(2))
-                if w * h > best[0] * best[1]:
-                    best = (w, h)
-            if best[0]:
-                master_res = best
+            # v9: 同时取 BANDWIDTH —— 只有 master 会声明码率, 媒体清单没有
+            for m in re.finditer(r'#EXT-X-STREAM-INF:([^\r\n]+)', txt):
+                attrs = m.group(1)
+                r = re.search(r'RESOLUTION=(\d+)x(\d+)', attrs)
+                if not r:
+                    continue
+                w, h = int(r.group(1)), int(r.group(2))
+                b = re.search(r'BANDWIDTH=(\d+)', attrs)
+                kbps = (int(b.group(1)) // 1000) if b else 0
+                if master_res is None or w * h > master_res[0] * master_res[1]:
+                    master_res, master_kbps = (w, h), kbps
+        base['kbps'] = master_kbps
         # ffmpeg 实测复核(优先); master声明仅佐证
-        w, h = ffprobe_res(url, ua)
+        w, h = ffprobe_res(url, ua, ref)
         if w:
-            return {'ok': True, 'w': w, 'h': h, 'method': 'ffmpeg', 'ms': ms}
+            return dict(base, w=w, h=h, method='ffmpeg')
         if master_res:
-            return {'ok': True, 'w': master_res[0], 'h': master_res[1],
-                    'method': 'master', 'ms': ms}
-        return {'ok': True, 'w': 0, 'h': 0, 'method': '', 'ms': ms}
+            return dict(base, w=master_res[0], h=master_res[1],
+                        method='master')
+        return base
     # 非m3u8文本(可能是flv/ts/php转发的流)
-    w, h = ffprobe_res(url, ua)
+    w, h = ffprobe_res(url, ua, ref)
     if w:
         return {'ok': True, 'w': w, 'h': h, 'method': 'ffmpeg', 'ms': ms}
     return {'ok': True, 'w': 0, 'h': 0, 'method': '', 'ms': ms}
+
+
+def rr_pick(urls_dict, n):
+    """v6: 按上游轮转取候选 —— 防止排第一个的上游(Guovin, 8月后停更)
+    用一堆旧死线把 LIVE_MAX_CAND 名额吃满, 后面 vbskycn 活池的线
+    一条都进不了实测. 轮转后每个上游都有份, 死线自然被淘汰出局"""
+    by = {}
+    for u, m in urls_dict.items():
+        by.setdefault(m.get('src'), []).append((u, m))
+    keys = list(by.keys())
+    out = []
+    i = 0
+    while len(out) < n and keys:
+        k = keys[i % len(keys)]
+        if by[k]:
+            out.append(by[k].pop(0))
+        elif not any(by[v] for v in keys):
+            break
+        i += 1
+    return out
+
+
+def pick_live_urls(hd, backup, unver):
+    """选定该频道最终线路, 返回 (urls, n_unver)。
+    主力 hd(>=720p) 优先; 不足 LIVE_KEEP 用 backup(>=540p) 补齐;
+    一条实测线都没有时, 才用 unver(索引可达但测不出分辨率)兜底 ——
+    所以永远不会因兜底而挤掉任何实测通过的线"""
+    urls = hd[:LIVE_KEEP]
+    if len(urls) < LIVE_KEEP:
+        urls += backup[:LIVE_KEEP - len(urls)]
+    if urls or not unver:
+        return urls, 0
+    unver = sorted(unver, key=lambda x: x['ms'])
+    picked = unver[:LIVE_KEEP]
+    return picked, len(picked)
 
 
 def collect_live(wl):
@@ -780,39 +1340,45 @@ def collect_live(wl):
             for ln in f:
                 ln = ln.strip()
                 if ln.startswith('L|'):
-                    rest = ln[2:].strip()
-                    alias = ''
-                    if '|' in rest:
-                        u, alias = rest.split('|', 1)
-                        rest, alias = u.strip(), alias.strip()
-                    upstreams.append((rest, alias))
+                    u, alias = split_alias(ln[2:])
+                    upstreams.append((u, alias))
 
-    cands = {}   # 频道名 -> {'entry':wl, 'urls':{url:{'ua':..,'raw':..}}}
+    cands = {}   # 频道名 -> {'entry':wl, 'urls':{url:{'ua','ref','raw','src'}}}
     up_stats = []
-    for u, alias in upstreams:
+    for up_idx, (u, alias) in enumerate(upstreams):
         try:
             st, data = http_get(u, 25)
             txt = data.decode('utf-8-sig', 'ignore')
             items = parse_m3u(txt)
             matched = 0
-            v6 = 0
+            ipv6_cnt = 0      # v7: 原来叫 v6, 与版本号 v6 撞名
+            ads = 0
             for it in items:
                 e = match_channel(it['name'], wl)
                 if not e:
                     continue
                 matched += 1
                 if LIVE_NO_IPV6 and is_ipv6_url(it['url']):
-                    v6 += 1
+                    ipv6_cnt += 1
+                    continue
+                # v5: 运营源直接拒收(不实测不占配额) —— 贴片广告线
+                if is_ad_url(it['url']):
+                    ads += 1
                     continue
                 cands.setdefault(e['name'], {'entry': e, 'urls': {}})
                 if it['url'] not in cands[e['name']]['urls']:
                     cands[e['name']]['urls'][it['url']] = {
-                        'ua': it.get('ua'), 'raw': it['name']}
+                        'ua': it.get('ua'), 'ref': it.get('ref'),
+                        'raw': it['name'], 'src': up_idx}
             up_stats.append({'url': u, 'name': alias, 'ok': True,
                              'total': len(items), 'matched': matched})
+            extra = ''
+            if ads:
+                extra += ' 拒运营源%d条' % ads
+            if ipv6_cnt:
+                extra += ' 跳IPv6 %d条' % ipv6_cnt
             log('[直播上游] %s %d条, 命中%d%s' % (
-                alias or u, len(items), matched,
-                ' (跳过IPv6 %d条)' % v6 if v6 else ''))
+                alias or u, len(items), matched, extra))
         except Exception as e:
             up_stats.append({'url': u, 'name': alias, 'ok': False,
                              'err': str(e)[:60]})
@@ -820,15 +1386,15 @@ def collect_live(wl):
 
     tasks = []
     for key, c in cands.items():
-        urls = list(c['urls'].items())[:LIVE_MAX_CAND]
-        for u, meta in urls:
-            tasks.append((key, u, meta.get('ua'), meta.get('raw')))
+        for u, meta in rr_pick(c['urls'], LIVE_MAX_CAND):
+            tasks.append((key, u, meta.get('ua'), meta.get('raw'),
+                          meta.get('ref')))
     log('直播候选线路共 %d 条(白名单频道 %d 个), 并发实测...' % (
         len(tasks), len(cands)))
     probe_res = {}
     with ThreadPoolExecutor(MAX_WORKERS) as ex:
-        futs = {ex.submit(probe_live, u, ua): (key, u, raw)
-                for key, u, ua, raw in tasks}
+        futs = {ex.submit(probe_live, u, ua, ref): (key, u, raw)
+                for key, u, ua, raw, ref in tasks}
         for fu in as_completed(futs):
             key, u, raw = futs[fu]
             probe_res[(key, u)] = (fu.result(), raw)
@@ -837,43 +1403,77 @@ def collect_live(wl):
     for key, c in cands.items():
         hd = []        # v2: 高清层(>=720p) —— 主力线路
         backup = []    # v2: 备用层(>=540p) —— 换线保底, 有得换好过没得换
+        unver = []     # v8: 索引合法但测不出分辨率(见下方说明)
         for (k2, u), (r, raw) in probe_res.items():
             if k2 != key or not r['ok']:
                 continue
             w, h, method = r['w'], r['h'], r['method']
             # 清晰度必须实测: 实测不出分辨率的线路一律不收(名字标签不作依据)
             if not w:
+                if r.get('hls'):
+                    unver.append({'url': u, 'w': 0, 'h': 0,
+                                  'method': 'unverified', 'ms': r['ms']})
                 continue
-            entry = {'url': u, 'w': w, 'h': h, 'method': method, 'ms': r['ms']}
+            kbps = r.get('kbps') or 0
+            entry = {'url': u, 'w': w, 'h': h, 'method': method,
+                     'ms': r['ms'], 'kbps': kbps}
             if w >= LIVE_MIN_W and h >= LIVE_MIN_H:
-                hd.append(entry)
+                # v9: 分辨率够但码率虚低 -> 降到备用层, 不让假高清占主位
+                if kbps and kbps / (w * h / 1000.0) < LIVE_MIN_BPP:
+                    entry['thin'] = True
+                    backup.append(entry)
+                else:
+                    hd.append(entry)
             elif h >= LIVE_BACKUP_MIN_H and w >= 960:
                 backup.append(entry)
-        if not hd and not backup:
-            continue
         # v2 排序: 稳定优先 —— 延迟分档(快者优先) > 分辨率 > 实测方式
         # 旧版"分辨率优先"会把高画质但高延迟的烂线排第一, 导致 CCTV-1 老卡
         def stab_key(x):
             ms_tier = 0 if x['ms'] < 1500 else (1 if x['ms'] < 3000 else 2)
-            return (ms_tier, -(x['w'] * x['h']), 0 if x['method'] == 'ffmpeg' else 1, x['ms'])
+            return (ms_tier, -(x['w'] * x['h']), -(x.get('kbps') or 0),
+                    0 if x['method'] == 'ffmpeg' else 1, x['ms'])
         hd.sort(key=stab_key)
         backup.sort(key=stab_key)
-        # 主力层不足时用备用层补齐, 保证每频道尽量有3条可换
-        urls = hd[:LIVE_KEEP]
-        if len(urls) < LIVE_KEEP:
-            urls += backup[:LIVE_KEEP - len(urls)]
+        # v8: 兜底判定抽到 pick_live_urls(), 便于单测
+        urls, n_unver = pick_live_urls(hd, backup, unver)
+        if n_unver:
+            log('[直播兜底] %s 无实测线, 收 %d 条未实测(仅索引可达)'
+                % (key, n_unver))
+        if not urls:
+            continue
         channels.append({'name': key, 'group': c['entry']['group'],
+                         'epg': c['entry'].get('epg'),
                          'urls': urls,
                          'n_cand': len(c['urls']),
-                         'n_hd': len(hd), 'n_backup': len(backup)})
+                         'n_hd': len(hd), 'n_backup': len(backup),
+                         'n_unver': n_unver})
 
     order = {g: i for i, g in enumerate(LIVE_GROUPS)}
     channels.sort(key=lambda c: (order.get(c['group'], 9), c['name']))
     return channels, up_stats
 
 
-def write_live(channels, repo):
-    """生成 live.json(OSC风格) 与 live.m3u; 返回 lives 结构"""
+def write_ads_pool(con, one):
+    """v10: 广告域名清单 —— 只写文件不启用。
+    用户要求"先看清单再启用", 所以脚本每轮把采集结果落成 ads_pool.json,
+    report 里也列一份。确认没有误伤(比如把图床域名当成广告)后,
+    把 ADS_ENABLE 改成 True, 下一轮就会写进 tvbox.json 的 ads 字段。"""
+    data = {'enabled': ADS_ENABLE,
+            'min_votes': ADS_MIN_VOTES,
+            'consensus': con,          # >=ADS_MIN_VOTES 个仓同时列出, 启用后会写进配置
+            'single': one,             # 只有1个仓列出, 可能有误伤, 默认不启用
+            'note': ('consensus = 至少 %d 个不同仓同时列出的域名(启用后生效); '
+                     'single = 只有1个仓列出, 误伤风险高, 不启用'
+                     % ADS_MIN_VOTES)}
+    with open(ADS_POOL, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    log('ads_pool.json: 共识 %d / 单仓 %d (当前%s)' % (
+        len(con), len(one), '已启用' if ADS_ENABLE else '仅采集未启用'))
+
+
+def write_live(channels):
+    """生成 live.json(OSC风格) 与 live.m3u; 返回 lives 结构
+    v7: 去掉从未使用过的 repo 参数(签名骗人比缺参数更糟)"""
     lives = []
     for g in LIVE_GROUPS:
         chans = [c for c in channels if c['group'] == g]
@@ -884,72 +1484,48 @@ def write_live(channels, repo):
     with open(LIVE_JSON, 'w', encoding='utf-8') as f:
         json.dump({'lives': lives}, f, ensure_ascii=False, indent=2)
     lines = ['#EXTM3U x-tvg-url="%s"' % LIVE_EPG]
+    # v10: 每台写满3条(v5 曾只写第1条, 理由是个别播放器不合并同名多行会显示
+    # 成重复频道)。用户拍板"每台3个源"—— 电视上主线路卡住/断流时当天还有得换,
+    # 不必等第二天更新。代价: 少数魔改播放器会把一台显示成3个同名频道。
     for g in LIVE_GROUPS:
         for c in [x for x in channels if x['group'] == g]:
-            for u in c['urls']:
-                lines.append('#EXTINF:-1 group-title="%s",%s' % (g, c['name']))
+            for u in c['urls'][:LIVE_KEEP]:
+                # v9: 带上 tvg-id/tvg-name, 播放器才能把台名对到 EPG 的 channel
+                epg = c.get('epg')
+                attr = (' tvg-id="%s" tvg-name="%s"' % (epg, epg)) if epg else ''
+                lines.append('#EXTINF:-1%s group-title="%s",%s' % (
+                    attr, g, c['name']))
                 lines.append(u['url'])
     with open(LIVE_M3U, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines) + '\n')
-    log('live.json / live.m3u 已生成: %d 个频道, 共 %d 条线路' % (
-        len(channels), sum(len(c['urls']) for c in channels)))
+    log('live.m3u: %d 个频道, 每台至多%d条; live.json 备线共 %d 条' % (
+        len(channels), LIVE_KEEP, sum(len(c['urls']) for c in channels)))
     return lives
 
 
 # ---------------- 归集(点播) ----------------
 
 def collect():
-    """归集: 返回 (接口池pool, 仓列表stores含cfg)
+    """归集: 返回 (接口池pool, 仓列表stores含cfg, 导航父子表nav_children)
     v2: 双层去重 —— URL归一化(剥代理前缀/参数/尾斜杠) + 内容指纹(站点api集合哈希)
-    不同多仓指向同一子仓时只收一次(先到先得, 记日志)"""
+    不同多仓指向同一子仓时只收一次(先到先得, 记日志)
+    v3: nav_children = {导航仓url: [(子仓名, 子仓url)]} 供清理版重建
+    v7: 结构防御 —— sites/storeHouse/urls 任意畸形只跳过该项, 不让整轮崩"""
     pool = {}
     stores = []
+    nav_children = {}
     seen_store = set()
     seen_fingerprint = {}
     SUB_LIMIT = 25
-
-    def norm_store_url(u):
-        """仓地址归一化: 剥 gh-proxy/jsdelivr 等代理前缀、去参数、去尾斜杠、小写host"""
-        u = u.strip()
-        for pref in ('https://gh-proxy.com/', 'https://ghproxy.net/',
-                     'https://ghfast.top/', 'https://mirror.ghproxy.com/',
-                     'https://cdn.jsdelivr.net/gh/'):
-            if u.lower().startswith(pref):
-                u = u[len(pref):]
-                if 'raw.githubusercontent.com' not in u[:60] and \
-                        not re.match(r'^https?://', u, re.I):
-                    u = 'https://' + u
-        try:
-            p = urllib.parse.urlsplit(u)
-        except Exception:
-            return u.lower().rstrip('/')
-        host = (p.hostname or '').lower()
-        path = (p.path or '').rstrip('/')
-        return (host + path) if path else host
-
-    def store_fingerprint(cfg):
-        """仓内容指纹: 取前5个站点的api/key集合排序后哈希 —— 拦截不同URL相同内容的克隆仓"""
-        sites = cfg.get('sites') or []
-        keys = []
-        for s in sites[:5]:
-            if not isinstance(s, dict):
-                continue
-            k = str(s.get('api') or '') or str(s.get('key') or '')
-            if k:
-                keys.append(norm_store_url(k) if k.startswith('http') else k)
-        if not keys:
-            return None
-        keys.sort()
-        import hashlib
-        return hashlib.md5('|'.join(keys).encode('utf-8')).hexdigest()
+    # v7: norm_store_url / store_fingerprint 已提到模块级(纯函数, 可单测)
 
     def add(api, name, origin):
-        api = api.strip()
+        api = as_str(api).strip()
         if not api.startswith('http'):
             return
         key = re.sub(r'^https?://', '', api).lower()
         if key not in pool:
-            pool[key] = {'api': api, 'name': name, 'origin': origin}
+            pool[key] = {'api': api, 'name': as_str(name), 'origin': origin}
 
     def add_store(name, url, cfg):
         norm = norm_store_url(url)
@@ -958,51 +1534,57 @@ def collect():
         fp = store_fingerprint(cfg) if isinstance(cfg, dict) else None
         if fp and fp in seen_fingerprint:
             log('[重复仓跳过] %s 与已收录的 %s 内容相同' % (
-                (name or url)[:30], seen_fingerprint[fp][:30]))
+                as_str(name or url)[:30], seen_fingerprint[fp][:30]))
             return False
         seen_store.add(norm)
         if fp:
             seen_fingerprint[fp] = (name or url)
         stores.append({'name': name or urllib.parse.urlparse(url).netloc,
-                       'url': url, 'cfg': cfg})
+                       'url': url, 'cfg': cfg,
+                       'kind': store_kind(cfg)})
         return True
 
     def extract_apis(cfg, origin):
         n = 0
-        for s in (cfg.get('sites') or []):
-            if s.get('type') != 3:
+        for s in as_list(as_dict(cfg).get('sites')):
+            if not isinstance(s, dict):
                 continue
-            api = str(s.get('api') or '')
+            if as_str(s.get('type')).strip() != '3':
+                continue
+            api = as_str(s.get('api'))
             if api.startswith('http') and not api.split('?')[0].rstrip('/').endswith('.js'):
-                add(api, str(s.get('name') or ''), origin)
+                add(api, as_str(s.get('name')), origin)
                 n += 1
         return n
 
     def sub_entries(cfg):
+        """子仓列表: storeHouse(对象数组) + urls(数组/字符串混用).
+        v7: 字段若是 dict/字符串也不再崩(原 (sh or {}).get 遇字符串直接炸)"""
+        cfg = as_dict(cfg)
         out = []
-        for sh in (cfg.get('storeHouse') or []):
-            u = str((sh or {}).get('sourceUrl') or '')
-            n = str((sh or {}).get('sourceName') or '')
+        for sh in as_list(cfg.get('storeHouse')):
+            d = as_dict(sh)
+            u = as_str(d.get('sourceUrl'))
             if u.startswith('http'):
-                out.append((n, u))
-        for u in (cfg.get('urls') or []):
+                out.append((as_str(d.get('sourceName')), u))
+        for u in as_list(cfg.get('urls')):
             if isinstance(u, dict):
-                uu = str(u.get('url') or '')
-                nn = str(u.get('name') or '')
+                uu = as_str(u.get('url'))
                 if uu.startswith('http'):
-                    out.append((nn, uu))
+                    out.append((as_str(u.get('name')), uu))
             elif isinstance(u, str) and u.startswith('http'):
                 out.append(('', u))
         return out
 
     def follow_store(url, alias, depth=0):
         """递归跟进一个仓: 自己进stores, 若是多仓则继续跟子仓(验到最后一级)
-        v2: 重复仓(同URL马甲/同内容)直接不跟, 避免同一子仓被多个多仓重复拉入"""
+        v2: 重复仓(同URL马甲/同内容)直接不跟, 避免同一子仓被多个多仓重复拉入
+        v3: 记录导航仓→子仓关系, 供清理版重建"""
         norm = norm_store_url(url)
         if norm in seen_store or len(stores) >= SUB_TOTAL_LIMIT:
             return 0
         try:
-            cfg = fetch_json(url, 12)
+            cfg = fetch_cfg(url, 12)
         except Exception as e:
             log('[聚合跳过] %s -> %s' % (url, str(e)[:60]))
             return 0
@@ -1011,13 +1593,19 @@ def collect():
         n = extract_apis(cfg, '聚合')
         if depth >= SUB_DEPTH:
             return n
-        for nm, s2 in sub_entries(cfg)[:SUB_LIMIT]:
-            n += follow_store(s2, nm, depth + 1)
+        subs = sub_entries(cfg)[:SUB_LIMIT]
+        if subs:
+            nav_children[url] = subs   # v3: 记录父子关系
+        for nm, s2 in subs:
+            try:
+                n += follow_store(s2, nm, depth + 1)
+            except Exception as e:      # v7: 单个子仓再烂也不影响其它子仓
+                log('[子仓跳过] %s -> %s' % (s2, str(e)[:50]))
         return n
 
     if not os.path.exists(SOURCES):
         log('缺少 sources.txt')
-        return pool, stores
+        return pool, stores, nav_children
     with open(SOURCES, encoding='utf-8-sig') as f:
         lines = [ln.strip() for ln in f]
     dir_lines = [ln for ln in lines if ln.startswith('D|')]
@@ -1026,13 +1614,9 @@ def collect():
                 or line.startswith('D|'):
             continue
         if line.startswith('@'):
-            rest = line[1:].strip()
-            alias = ''
-            if '|' in rest:
-                parts = rest.split('|', 1)
-                rest, alias = parts[0].strip(), parts[1].strip()
+            rest, alias = split_alias(line[1:])
             try:
-                cfg = fetch_json(rest, 15)
+                cfg = fetch_cfg(rest, 15)
             except Exception as e:
                 log('[订阅失败] %s -> %s' % (rest, e))
                 continue
@@ -1040,9 +1624,14 @@ def collect():
                 continue   # v2: 与已收录仓重复, 子仓也无需再跟
             n = extract_apis(cfg, '订阅')
             subs = sub_entries(cfg)[:SUB_LIMIT]
+            if subs:
+                nav_children[rest] = subs   # v3: 记录父子关系
             nsub = 0
             for nm, s2 in subs:
-                nsub += follow_store(s2, nm, 1)
+                try:
+                    nsub += follow_store(s2, nm, 1)
+                except Exception as e:
+                    log('[子仓跳过] %s -> %s' % (s2, str(e)[:50]))
             log('[订阅] %s 直提%d接口, 跟进%d子仓及孙仓(接口+%d)' % (
                 rest, n, len(subs), nsub))
         else:
@@ -1054,41 +1643,73 @@ def collect():
 
     # ---- 目录仓发现: 自动从网上找点播源(无需人工) ----
     for dline in dir_lines:
-        rest = dline[2:].strip()
-        alias = ''
-        if '|' in rest:
-            u, alias = rest.split('|', 1)
-            rest, alias = u.strip(), alias.strip()
+        rest, alias = split_alias(dline[2:])
         try:
-            j = fetch_json(rest, 20)
+            j = fetch_cfg(rest, 20)
         except Exception as e:
             log('[目录仓失败] %s -> %s' % (rest, e))
             continue
-        resources = j.get('resources') or []
+        resources = [x for x in as_list(j.get('resources')) if isinstance(x, dict)]
         found = 0
         for item in resources:
-            cat = str(item.get('category') or '')
+            cat = as_str(item.get('category'))
             if cat not in DIR_CATEGORIES:
                 continue
-            u = str(item.get('url') or '')
-            nm = str(item.get('name') or '')
+            u = as_str(item.get('url'))
+            nm = as_str(item.get('name'))
             if not u.startswith('http'):
                 continue
             if norm_store_url(u) in seen_store:
                 continue
             try:
-                cfg = fetch_json(u, 12)
+                cfg = fetch_cfg(u, 12)
             except Exception as e:
                 log('[发现跳过] %s %s -> %s' % (nm, u, str(e)[:50]))
                 continue
-            add_store(nm, u, cfg)
-            extract_apis(cfg, '发现')
+            try:
+                add_store(nm, u, cfg)
+                extract_apis(cfg, '发现')
+            except Exception as e:
+                log('[发现跳过] %s -> %s' % (u, str(e)[:50]))
+                continue
             found += 1
             if found >= DIR_LIMIT:
                 break
         log('[目录仓] %s 发现%d个新仓(共%d资源)' % (
             alias or rest, found, len(resources)))
-    return pool, stores
+    return pool, stores, nav_children
+
+
+# ---- v9: 熔断 ----
+# 防的是"全网抖动那天把能用的配置覆盖成空的"—— 无人值守系统里, 这是唯一
+# 能让电视变砖的路径。用户拍板: 腰斩(跌到一半)才拦, 正常波动不干预。
+CIRCUIT_RATIO = 0.5
+CIRCUIT_MIN_API = 6    # 基线太小(刚起步)时比例没有意义, 不拦
+CIRCUIT_MIN_CH = 10
+
+
+def load_prev_stats():
+    """读上一版 tvbox.json 得到 (接口数, 频道数) 作为熔断基线。
+    读不到(首次运行/文件缺失)返回 (0,0): 没有基线就不拦, 不能因为
+    "第一次跑"就把正常结果也拦下来"""
+    try:
+        with open(TVBOX, encoding='utf-8') as f:
+            cfg = as_dict(json.load(f))
+    except Exception:
+        return 0, 0
+    n_api = len(as_list(cfg.get('sites')))
+    n_ch = sum(len(as_list(as_dict(g).get('channels')))
+               for g in as_list(cfg.get('lives')))
+    return n_api, n_ch
+
+
+def circuit_broken(prev_api, prev_ch, new_api, new_ch):
+    """本轮比上一版腰斩则熔断, 返回 (是否熔断, 原因)"""
+    if prev_api >= CIRCUIT_MIN_API and new_api < prev_api * CIRCUIT_RATIO:
+        return True, '接口数腰斩 %d -> %d' % (prev_api, new_api)
+    if prev_ch >= CIRCUIT_MIN_CH and new_ch < prev_ch * CIRCUIT_RATIO:
+        return True, '频道数腰斩 %d -> %d' % (prev_ch, new_ch)
+    return False, ''
 
 
 def load_deadlog():
@@ -1099,52 +1720,173 @@ def load_deadlog():
             data = json.load(f)
     except Exception:
         return {}, {}
+    if not isinstance(data, dict):      # v7: 文件被人手改坏也不崩
+        return {}, {}
     if 'apis' in data or 'stores' in data:
-        return data.get('apis') or {}, data.get('stores') or {}
+        return as_dict(data.get('apis')), as_dict(data.get('stores'))
     return data, {}
 
 
 def save_deadlog(apis, stores):
+    # v7: 键排序后再写 —— 否则插入顺序一变就是一次无意义的 diff
     with open(DEADLOG, 'w', encoding='utf-8') as f:
-        json.dump({'apis': apis, 'stores': stores}, f,
+        json.dump({'apis': dict(sorted(apis.items())),
+                   'stores': dict(sorted(stores.items()))}, f,
                   ensure_ascii=False, indent=1)
 
 
-def write_store(scored, alive_count, repo, live_ok):
-    """生成多仓清单 store.json: 我的直播 + 按健康分排序的点播仓
-    v2: Top N 截断(STORE_TOP_N) —— 少而精, 电视列表只留高分头部仓"""
+def write_multi_files(scored, nav_children):
+    """v3: 导航仓重建清理版(multi/mN.json) —— 只装体检合格的子仓.
+    病根: 电视加载别人家的导航文件时会拉它全部子仓, 死一个(如摸鱼儿)
+    就弹"拉取配置失败"; 清理版把死子仓天然剔除, 电视加载我们的文件.
+    v4: 清理版分数=所装子仓的最低分(一票否决精神), 作为1个仓进前3竞争.
+    返回 [(显示名, 文件名, 最低子仓分)] 供 store.json 引用"""
+    multi_dir = os.path.join(HERE, 'multi')
+    shutil.rmtree(multi_dir, ignore_errors=True)
+    os.makedirs(multi_dir, exist_ok=True)
+    info = {as_str(s.get('url')): s for s in scored}   # url -> 体检结果
+    out = []
+    idx = 0
+    for nav_url, children in nav_children.items():
+        nav = info.get(nav_url)
+        if not nav or nav.get('state') != '保留':
+            continue   # 导航仓本身不在保留状态则不重建
+        kept = []
+        subs = []
+        for nm, cu in children:
+            cs = info.get(cu)
+            if not cs:
+                continue   # 子仓没跟进来(拉取失败) —— 正是要跳过的
+            # v7: 嵌套导航仓(kind=nav)不进清理版, 避免问题复现
+            if cs.get('state') == '保留' and cs.get('kind') != 'nav' \
+                    and cs.get('score') is not None \
+                    and cs['score'] >= STORE_MIN_HEALTH:
+                kept.append({'sourceName': as_str(nm or cs.get('name') or '未命名')[:16],
+                             'sourceUrl': tv_url(cu)})
+                subs.append(cs['score'])
+        if len(kept) < 2:
+            log('[导航清理] %s 合格子仓仅%d个, 不生成' % (
+                as_str(nav.get('name') or nav_url)[:20], len(kept)))
+            continue
+        idx += 1
+        fn = 'multi/m%d.json' % idx
+        with open(os.path.join(HERE, fn), 'w', encoding='utf-8') as f:
+            json.dump({'storeHouse': kept}, f, ensure_ascii=False, indent=2)
+        mscore = min(subs) if subs else 0   # v4: 清理版分数=最低子仓分
+        disp = '%s·清理版%d仓' % (as_str(nav.get('name') or '多仓')[:14], len(kept))
+        out.append((disp, fn, mscore, len(kept)))
+        log('[导航清理] %s -> %s (合格%d/%d, 最低子仓%d分)' % (
+            disp, fn, len(kept), len(children), round(mscore * 100)))
+    return out
+
+
+# ---- v9: 大仓容错 ----
+# 病根: 健康分=存活站点数/总站点数, 而完美线是 100%。200 个站点的仓死 1 个
+# 就是 99.5%, 永远够不到完美线, 竞争不过 3 个站全活的小仓 —— 结果清单里
+# 剩下的都是"小而全"的仓, 内容最少。大仓恰恰是内容最多的那些。
+# 用户拍板保留一票否决精神, 只对大仓放开 1 个名额。
+BIG_STORE_SITES = 30       # 站点数达到此值算大仓
+BIG_STORE_TOLERANCE = 1    # 大仓允许的死站数(小仓仍然一个都不能死)
+
+
+def is_perfect_store(s):
+    """完美仓判定: 小仓必须 100%, 大仓允许死 1 个"""
+    score = s.get('score')
+    if score is None:
+        return False
+    if score >= STORE_PERFECT:
+        return True
+    total = s.get('total') or 0
+    alive = s.get('alive') or 0
+    return total >= BIG_STORE_SITES and (total - alive) <= BIG_STORE_TOLERANCE
+
+
+def write_store(scored, repo, live_ok, multi_entries=None):
+    """v4: 电视清单 = 我的直播 + 前3仓(一票否决竞争制)
+    完美仓(100%存活)优先凑满3个; 不足时用>=90分仓按分数补位;
+    清理版多仓算1个仓同台竞争(分数=最低子仓分), 同为完美时多仓优先
+    (它每日重建, 死子仓会被自动剔除, 自带容错).
+    v2 的"自动优选·直链检测"条目已删(用户拍板)."""
     entries = []
+    # v10: 自己那份配置也挂进 store —— ads 广告域名拦截只在"播放器直接加载的
+    # 那份配置"里生效, 而 store 里其他仓的 ads 由别人决定。用户用的是 store
+    # 入口, 不把自己这份挂上去, ads 那一层等于白做。
+    if repo:
+        mine = 'https://%s/%s/main/tvbox.json' % (RAW_HOST, repo)
+        entries.append({'sourceName': '我的影视',
+                        'sourceUrl': tv_url(mine)})
     if repo and live_ok:
-        own = 'https://raw.githubusercontent.com/%s/main/live.json' % repo
+        own = 'https://%s/%s/main/live.json' % (RAW_HOST, repo)
         entries.append({'sourceName': '我的直播',
                         'sourceUrl': tv_url(own)})
-    if repo and alive_count > 0:
-        own = 'https://raw.githubusercontent.com/%s/main/tvbox.json' % repo
-        entries.append({'sourceName': '自动优选·直链检测',
-                        'sourceUrl': tv_url(own)})
-    kept_list = [s for s in scored if s.get('score') is not None]
-    dropped = len(kept_list) - STORE_TOP_N
-    for s in kept_list[:STORE_TOP_N]:
-        name = (s.get('name') or '未命名')[:16]
-        if s.get('score') is not None:
-            name = '%s %d分' % (name, round(s['score'] * 100))
-        entries.append({'sourceName': name, 'sourceUrl': tv_url(s['url'])})
+    # 候选池: 单仓(有分数) + 清理版(带最低子仓分), 同台竞争
+    cands = []
+    for s in scored:
+        # v7: 显式 kind 判断取代"score is None 即导航仓"的隐含约定
+        if s.get('kind') != 'nav' and s.get('score') is not None:
+            # v9: total 作为内容量代理 —— 站点多的仓内容广度更大
+            cands.append({'score': s['score'], 'multi': False, 's': s,
+                          'total': s.get('total') or 0,
+                          'perfect': is_perfect_store(s)})
+    for ent in (multi_entries or []):
+        disp, fn, mscore = ent[0], ent[1], ent[2]
+        n_sub = ent[3] if len(ent) > 3 else 0
+        if not repo:
+            log('[警告] 未取到 GITHUB_REPOSITORY, 清理版 %s 无法生成可访问地址, 跳过' % fn)
+            continue
+        cands.append({'score': mscore, 'multi': True, 'name': disp, 'fn': fn,
+                      'total': n_sub,
+                      'perfect': mscore >= STORE_PERFECT})
+    perfect = [c for c in cands if c['perfect']]
+    backup = [c for c in cands
+              if STORE_MIN_HEALTH <= c['score'] < STORE_PERFECT
+              and not c['perfect']]
+    # 完美组: 清理版优先(每日重建自带容错) > 内容量 > 分数
+    # 补位组分数是硬指标: 先按分数降序, 同分才清理版优先
+    perfect.sort(key=lambda c: (c['multi'], c['total'], c['score']),
+                 reverse=True)
+    backup.sort(key=lambda c: (c['score'], c['multi']), reverse=True)
+    chosen = (perfect + backup)[:STORE_TOP_N]
+    dropped = len(cands) - len(chosen)
+    for c in chosen:
+        if c['multi']:
+            own = 'https://%s/%s/main/%s' % (RAW_HOST, repo, c['fn'])
+            entries.append({'sourceName': c['name'], 'sourceUrl': tv_url(own)})
+        else:
+            s = c['s']
+            name = '%s %d分' % (as_str(s.get('name') or '未命名')[:16],
+                                round(c['score'] * 100))
+            entries.append({'sourceName': name,
+                            'sourceUrl': tv_url(as_str(s.get('url')))})
     cfg = {'storeHouse': entries}
     with open(STORE, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
-    log('store.json 已生成: %d 个仓(含直播仓, Top%d截断, 携弃%d个低分仓)' % (
-        len(entries), STORE_TOP_N, max(0, dropped)))
+    n_perf = min(len(perfect), STORE_TOP_N)
+    log('store.json 已生成: %d 个入口(我的影视+我的直播+外部仓%d; 完美仓%d 补位%d, 弃%d个)' % (
+        len(entries), len(chosen), n_perf,
+        len(chosen) - n_perf, max(0, dropped)))
 
 
 def write_report(items, alive, suspect, deadlist, scored, channels,
-                 up_stats, now):
+                 up_stats, now, trip=''):
     repo = os.environ.get('GITHUB_REPOSITORY', '')
     lines = ['# TVBox 源检测报告', '', '检测时间: %s (北京时间)' % now, '']
+    if trip:
+        lines += ['> ⚠️ **本轮触发熔断：%s**' % trip,
+                  '>',
+                  '> `tvbox.json` / `store.json` / `live.json` / `live.m3u` '
+                  '**保持上一版未变**（没有覆盖成空配置）。',
+                  '> 下面的数据只代表本轮检测结果，**不代表电视当前正在用的配置**。',
+                  '> 若连续两天熔断，请手动跑一次 `workflow_dispatch` 或在'
+                  ' `sources.txt` 里换上游。', '']
     lines += ['## 一、直链接口检测 (tvbox.json)', '',
               '| 状态 | 名称 | 接口 | 延迟 | 说明 |', '|---|---|---|---|---|']
 
     def row(tag, it, ms, note):
-        name = (it.get('name') or '未命名')[:24]
+        name = as_str(it.get('name') or '未命名')[:24]
+        # v9: 搜索不通的接口单独标出来 —— 这类接口在电视上能打开仓但一搜就空
+        if it.get('search') is False:
+            note = ('**搜索不可用**' if not note else note + ' · **搜索不可用**')
         lines.append('| %s | %s | `%s` | %s | %s |' % (
             tag, name, it['api'], ('%dms' % ms) if ms else '-', note))
 
@@ -1157,21 +1899,37 @@ def write_report(items, alive, suspect, deadlist, scored, channels,
     lines.append('')
     lines.append('接口归集 %d | 存活 %d | 疑似 %d | 剔除 %d' % (
         len(items), len(alive), len(suspect), len(deadlist)))
+    # v10: 上表是"检测结果", tvbox.json 只取前 MAX_SITES —— 差多少要说清楚,
+    # 否则看报告的人会以为漏写了
+    if len(alive) > MAX_SITES:
+        lines += ['', '> `tvbox.json` 实际只收录前 %d 个站点'
+                      '（排序：搜索可用优先，其次延迟）。本轮截断 %d 个，'
+                      '完整存活清单见上表。' % (MAX_SITES, len(alive) - MAX_SITES)]
 
     lines += ['', '## 二、仓体检 (store.json, 按健康分排序)', '',
                '健康分 = 站点存活占比; 含CMS接口深测(实际调用验证有真实数据'
                '+抽真实视频测广告); ext内嵌接口递归拆测; 子仓跟到孙仓级', '',
                '门槛: 低于 %d%% 或抽测发现插广告的仓本轮剔除(下轮达标自动回来);'
                ' 多仓入口不参与分数' % (STORE_MIN_HEALTH * 100), '',
-               'v2: 抽测影片<720p降15分(点播画质); 首页无推荐/海报挂降分(推荐质量);',
+               'v2: 抽测影片<720p降6分(点播画质); 首页无推荐/海报挂降分(推荐质量);'
+               ' v6: 惩罚分<门槛余量(0.10), 只影响排名不再等于剔除;',
                '同内容克隆仓(不同多仓指向同一子仓)自动去重只收一次;',
-               '电视清单只保留前 %d 个高分仓(少而精)' % STORE_TOP_N, '',
+               'v3: 导航仓生成清理版(multi/目录) —— 只装体检合格子仓, 死子仓不再拖累整仓;',
+               'v4: 电视清单只留前 %d 个仓 —— 一票否决竞争制: 完美仓(100%%存活)优先,'
+               '凑不满时用≥%d%%仓补位; 清理版多仓按最低子仓分算1个仓同台竞争,'
+               '同为完美时多仓优先(每日重建自带容错)' % (
+                   STORE_TOP_N, STORE_MIN_HEALTH * 100), '',
                '| 状态 | 仓 | 分数 | 站点存活 | jar | 广告 | 画质/推荐 | 说明 |',
                '|---|---|---|---|---|---|---|---|']
     for s in scored:
         st = s.get('state') or ''
         score = s.get('score')
-        pct = ('%d%%' % (score * 100)) if score is not None else '入口'
+        if s.get('kind') == 'nav':
+            pct = '入口'
+        elif score is not None:
+            pct = '%d%%' % (score * 100)
+        else:
+            pct = '—'
         site = '%d/%d' % (s.get('alive', 0), s.get('total', 0))
         if s.get('deep'):
             site += ' (深测%d)' % s['deep']
@@ -1189,30 +1947,47 @@ def write_report(items, alive, suspect, deadlist, scored, channels,
         if not qr_txt:
             qr_txt = '—'
         lines.append('| %s | %s | %s | %s | %s | %s | %s | %s |' % (
-            st, (s.get('name') or '未命名')[:18], pct, site, jar_txt, ad_txt,
+            st, as_str(s.get('name') or '未命名')[:18], pct, site, jar_txt, ad_txt,
             qr_txt, s.get('note') or ''))
     kept = [s for s in scored if s.get('state') == '保留']
     lines.append('')
-    lines.append('仓总数 %d | 保留 %d | 剔除 %d | 进电视清单 Top%d' % (
+    lines.append('仓总数 %d | 保留 %d | 剔除 %d | 电视清单前%d(完美优先+补位)' % (
         len(scored), len(kept), len(scored) - len(kept), STORE_TOP_N))
 
     lines += ['', '## 三、高清直播 (live.json, 频道白名单)', '',
                '收录标准: 主线路 ffmpeg拉流实测 >= 720p;'
                '备用线路 >= 540p(保证有线路可换);',
                '排序: 稳定优先(延迟分档) > 分辨率 —— 高画质但高延迟的烂线不再排第一;',
-               '拒收: IPv6线路/实测不出分辨率/疑似插广告(ts域名分散);',
-               '每频道保留前%d条线路(高清优先, 不足时540p备线补齐)' % LIVE_KEEP, '',
+               '拒收: IPv6线路 / 运营源(livekey·txiptv·bfgd等贴片广告线,'
+               '2026-10-27家中实看每台插广告实锤) / 实测不出分辨率'
+               '(例外: 该台一条实测线都没有时, 收索引可达的兜底线, 表中标"未实测") /'
+               '索引广告指纹(DISCONTINUITY>=2次拼接·分片>2.5倍中位数的异常长段'
+               '·首片超长起播贴片·ts域名分散; v6 改相对判定, 均匀长切片与'
+               '单次重连不误杀);',
+               'v10: live.m3u 每台输出 %d 条线路(主线路不足才用备线补) —— '
+               '电视上主线路卡住当天还能换, 不必等第二天; 少数魔改播放器会把'
+               '一台显示成多个同名频道。' % LIVE_KEEP, '',
                '| 频道 | 分组 | 线路数 | 高清/备线 | 最佳画质 |',
                '|---|---|---|---|---|']
     for c in channels:
         best = max(c['urls'], key=lambda u: u['w'] * u['h'])
-        res = '%dp' % best['h'] if best['h'] < 2000 else '4K'
+        if c.get('n_unver'):
+            res = '未实测'
+        elif best['h'] >= 2000:
+            res = '4K'
+        else:
+            res = '%dp' % best['h']
+        if best.get('kbps'):
+            res += '/%dk' % best['kbps']
         hb = '%d/%d' % (c.get('n_hd', 0), c.get('n_backup', 0))
         lines.append('| %s | %s | %d | %s | %s |' % (
             c['name'], c['group'], len(c['urls']), hb, res))
     lines.append('')
-    lines.append('直播频道 %d 个 / 线路 %d 条' % (
-        len(channels), sum(len(c['urls']) for c in channels)))
+    n_unver_ch = sum(1 for c in channels if c.get('n_unver'))
+    lines.append('直播频道 %d 个 / 线路 %d 条%s' % (
+        len(channels), sum(len(c['urls']) for c in channels),
+        ('（其中 %d 个台无实测线, 收的是仅索引可达的兜底线路, 可能卡顿）'
+         % n_unver_ch) if n_unver_ch else ''))
     # v2: 直播上游健康表(上游挂了看得见, 手动补新上游有依据)
     lines += ['', '### 直播上游健康表', '',
                '| 状态 | 上游 | 命中白名单 | 总条数 | 备注 |',
@@ -1220,21 +1995,53 @@ def write_report(items, alive, suspect, deadlist, scored, channels,
     for u in up_stats:
         if u.get('ok'):
             lines.append('| ✓ | %s | %d | %d | — |' % (
-                (u.get('name') or u['url'])[:36], u.get('matched', 0),
+                as_str(u.get('name') or u['url'])[:36], u.get('matched', 0),
                 u.get('total', 0)))
         else:
             lines.append('| ✗ | %s | - | - | %s |' % (
-                (u.get('name') or u['url'])[:36], u.get('err') or '失败'))
+                as_str(u.get('name') or u['url'])[:36],
+                as_str(u.get('err') or '失败')))
     lines.append('')
     lines.append('EPG 节目单: `%s`' % LIVE_EPG)
 
     if repo:
-        raw = 'https://raw.githubusercontent.com/%s/main/tvbox.json' % repo
-        raws = 'https://raw.githubusercontent.com/%s/main/store.json' % repo
+        raw = 'https://%s/%s/main/tvbox.json' % (RAW_HOST, repo)
+        raws = 'https://%s/%s/main/store.json' % (RAW_HOST, repo)
         lines += ['', '电视端多仓入口 (gh-proxy 加速, 推荐):', '', '```',
-                  'https://gh-proxy.com/' + raws, '```',
+                  GH_PROXY + raws, '```',
                   '', '电视端单仓入口 (直链+直播):', '', '```',
-                  'https://gh-proxy.com/' + raw, '```']
+                  GH_PROXY + raw, '```']
+
+    # ---- v10: 广告域名清单 ----
+    # 只采不启, 清单在这里和 ads_pool.json 各出一份, 供人工过目后再开
+    ads_con, ads_one = ads_consensus()
+
+    def _fmt(lst, n=60):
+        s = ', '.join(lst[:n])
+        if len(lst) > n:
+            s += '  …另有 %d 个' % (len(lst) - n)
+        return s
+
+    lines += ['', '## 四、广告域名清单 (ads_pool.json)', '',
+              '当前状态: ' + ('**已启用** —— 已写进 tvbox.json 的 ads, '
+                            '播放器会拦掉这些域名的请求'
+                            if ADS_ENABLE else
+                            '**仅采集未启用** —— tvbox.json 的 ads 仍为空。'
+                            '确认下面没有误伤(把图床/封面域名当成广告)后, '
+                            '把 `ADS_ENABLE` 改成 `True`, 下一轮自动生效'),
+              '',
+              '判定规则: 至少 %d 个不同仓同时列出的域名才算共识。'
+              '单仓列出的不启用 —— 上游常有把正常图床写进 ads 的, 一启用连海报都加载不出来'
+              % ADS_MIN_VOTES, '']
+    if ads_con:
+        lines += ['### 共识域名 (%d 个)' % len(ads_con), '', '```',
+                  _fmt(ads_con), '```']
+    else:
+        lines.append('共识域名: 无。本轮没采到 —— 可能是上游仓全部拉取失败, '
+                     '或各仓配置里本来就没写 ads 字段。')
+    if ads_one:
+        lines += ['', '### 单仓列出 (%d 个, 默认不启用)' % len(ads_one), '',
+                  '```', _fmt(ads_one), '```']
     with open(REPORT, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines) + '\n')
 
@@ -1279,17 +2086,31 @@ def sync_gitee():
     for fp in ['tvbox.json', 'store.json', 'live.json', 'live.m3u',
                'dead_log.json', 'report.md']:
         push_file_gitee(repo, fp, token)
+    # v3: 导航清理版文件也同步
+    multi_dir = os.path.join(HERE, 'multi')
+    if os.path.isdir(multi_dir):
+        for fn in sorted(os.listdir(multi_dir)):
+            push_file_gitee(repo, 'multi/' + fn, token)
 
 
 def main():
     global SOURCES
     sources = SOURCES
     if '--sources' in sys.argv:
-        sources = sys.argv[sys.argv.index('--sources') + 1]
+        i = sys.argv.index('--sources')
+        if i + 1 < len(sys.argv):     # v6: 兼容参数写末尾, 不再 IndexError
+            sources = sys.argv[i + 1]
     SOURCES = sources
 
     # ---- 点播归集 + 检测 ----
-    pool, stores = collect()
+    # v7: 阶段级兜底 —— 归集/体检任一阶段炸了, 也继续出 live/store,
+    # 不让"某天某个畸形仓"把当天所有产物一起带走
+    try:
+        pool, stores, nav_children = collect()
+    except Exception as e:
+        log('[阶段失败] 归集异常, 用空池继续: %s: %s' % (type(e).__name__, e))
+        traceback.print_exc()
+        pool, stores, nav_children = {}, [], {}
     items = list(pool.values())
     log('归集接口共 %d 个, 仓 %d 个' % (len(items), len(stores)))
 
@@ -1301,21 +2122,31 @@ def main():
             for fu in as_completed(futs):
                 it = futs[fu]
                 try:
-                    ms = fu.result()
-                    results[it['api']] = {'ok': True, 'ms': ms}
-                    log('[存活] %5dms  %s' % (ms, it['api']))
+                    ms, s_ok = fu.result()
+                    results[it['api']] = {'ok': True, 'ms': ms, 'search': s_ok}
+                    tag = '' if s_ok is not False else '  [搜索不可用]'
+                    log('[存活] %5dms  %s%s' % (ms, it['api'], tag))
                 except Exception as e:
                     results[it['api']] = {'ok': False, 'err': str(e)[:80]}
                     log('[失败] %s -> %s' % (it['api'], e))
 
     scored = []
     if stores:
-        scored = assess_stores(stores)
+        try:
+            scored = assess_stores(stores)
+        except Exception as e:
+            log('[阶段失败] 仓体检异常, 跳过点播仓: %s: %s' % (type(e).__name__, e))
+            traceback.print_exc()
 
     # ---- 直播归集 + 实测 ----
-    wl = build_whitelist()
-    channels, up_stats = collect_live(wl)
-    lives = write_live(channels, os.environ.get('GITHUB_REPOSITORY', ''))
+    try:
+        wl = build_whitelist()
+        channels, up_stats = collect_live(wl)
+    except Exception as e:
+        log('[阶段失败] 直播归集异常, 本轮不带直播: %s: %s' % (type(e).__name__, e))
+        traceback.print_exc()
+        channels, up_stats = [], []
+    # 注意: live.json 不在这里写 —— 要先过熔断, 否则会先把好文件覆盖掉
 
     # ---- 失败计数(防误杀) ----
     dead_apis, dead_stores = load_deadlog()
@@ -1328,7 +2159,7 @@ def main():
         r = results.get(api, {'ok': False, 'err': '未检测'})
         if r['ok']:
             dead_apis[api] = {'fails': 0, 'last_ok': now}
-            alive.append(dict(it, ms=r['ms']))
+            alive.append(dict(it, ms=r['ms'], search=r.get('search')))
         else:
             fails = int(dead_apis.get(api, {}).get('fails', 0)) + 1
             dead_apis[api] = {'fails': fails, 'last_fail': now, 'reason': r['err']}
@@ -1339,50 +2170,89 @@ def main():
                 suspect.append(rec)
 
     for s in scored:
-        url = s['url']
+        url = as_str(s.get('url'))
         score = s.get('score')
-        if score is None:
-            # 入口仓(无sites的多仓导航): 不参与分数剔除
+        if s.get('kind') == 'nav':
+            # 多仓导航入口: 不打分也不参与剔除(子仓已各自独立体检)
             s['state'] = '保留'
             s['note'] = '多仓入口(导航), 子仓已独立体检'
             dead_stores.pop(url, None)
             continue
         if s.get('ad_hits'):
-            s['state'] = '剔除'
-            s['note'] = '抽测发现 %d 个站点播放带广告, 本轮剔除' % s['ad_hits']
-            dead_stores[url] = {'last_fail': now, 'ads': s['ad_hits']}
-            continue
-        if score >= STORE_MIN_HEALTH:
+            # v9: 扣分而非一票否决 —— 3 个站点以上扣满 8 分, 跌破 90 才剔除
+            cut = min(AD_HITS_PENALTY * s['ad_hits'], AD_HITS_PENALTY_MAX)
+            if score is not None:
+                score = max(0.0, score - cut)
+                s['score'] = score
+            s['note'] = '抽测 %d 个站点插广告, 扣 %d 分' % (
+                s['ad_hits'], round(cut * 100))
+        if score is not None and score >= STORE_MIN_HEALTH:
             s['state'] = '保留'
             dead_stores.pop(url, None)
         else:
             # 一轮即踢: 每轮从sources重新归集, 下轮达标自动回来
             s['state'] = '剔除'
             s['note'] = '健康分 %d%% 低于门槛 %d%%, 本轮剔除' % (
-                score * 100, STORE_MIN_HEALTH * 100)
-            dead_stores[url] = {'last_fail': now, 'score': round(score, 2)}
+                (score or 0) * 100, STORE_MIN_HEALTH * 100)
+            dead_stores[url] = {'last_fail': now, 'score': round(score or 0, 2)}
+    # v6: 死计数按当前接口池裁剪 —— 旧接口早从 sources 删了还留在文件里,
+    # 只增不减, 每天 commit 一次把仓库喂胖; v7: 仓的失败记录一并裁剪
+    if items:
+        cur_apis = {it['api'] for it in items}
+        dead_apis = {k: v for k, v in dead_apis.items() if k in cur_apis}
+    if scored:
+        cur_stores = {as_str(s.get('url')) for s in scored}
+        dead_stores = {k: v for k, v in dead_stores.items() if k in cur_stores}
+
+    # ---- v9: 熔断 —— 本轮结果腰斩就不覆盖产物 ----
+    # 放在 save_deadlog 之前: 熔断说明本轮检测不可信, 不该把失败次数累加进去
+    prev_api, prev_ch = load_prev_stats()
+    tripped, why = circuit_broken(prev_api, prev_ch, len(alive), len(channels))
+    if tripped:
+        log('[熔断] %s' % why)
+        log('       保留上一版 tvbox/store/live 不动, 本轮只更新 report')
+        write_report(items, alive, suspect, deadlist, scored, channels,
+                     up_stats, now, trip=why)
+        return
     save_deadlog(dead_apis, dead_stores)
+    lives = write_live(channels)
 
     # ---- 生成配置 ----
-    alive.sort(key=lambda x: x['ms'])
+    # v10: 搜索可用的排前面 —— 截断到 MAX_SITES 时, 先被淘汰的是"能浏览但
+    # 搜不到片"的接口(用户要的是搜得到、放得出, 不是站点数量多)
+    alive.sort(key=lambda x: (1 if x.get('search') is False else 0, x['ms']))
+    # v9: 搜索不通的接口不标 searchable —— 能浏览但不能搜, 标了反而更糟
+    # (播放器把它当可搜索站点, 每次搜索都白等一轮超时)
+    no_search = 0
     sites = []
-    for i, it in enumerate(alive, 1):
-        name = it['name'] or urllib.parse.urlparse(it['api']).netloc
+    for i, it in enumerate(alive[:MAX_SITES], 1):
+        name = as_str(it.get('name')) or urllib.parse.urlparse(it['api']).netloc
+        srch = 0 if it.get('search') is False else 1
+        if not srch:
+            no_search += 1
         sites.append({'key': 'site%d' % i, 'name': name, 'type': 3,
-                      'api': it['api'], 'searchable': 1,
-                      'quickSearch': 1, 'filterable': 1})
-    cfg = {'wallpaper': '', 'sites': sites, 'flags': FLAGS, 'ads': [],
-           'lives': lives}
+                      'api': it['api'], 'searchable': srch,
+                      'quickSearch': srch, 'filterable': 1})
+    # v10: ads 播放器级域名拦截 —— 只采不启, 清单另存 ads_pool.json 供人工过目
+    ads_con, ads_one = ads_consensus()
+    write_ads_pool(ads_con, ads_one)
+    cfg = {'wallpaper': '', 'sites': sites, 'flags': FLAGS,
+           'ads': ads_con[:ADS_MAX] if ADS_ENABLE else [], 'lives': lives}
     with open(TVBOX, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
-    log('tvbox.json 已生成: %d 个存活接口, %d 组直播' % (
-        len(sites), len(lives)))
+    log('tvbox.json 已生成: %d 个站点(存活 %d, 截断 %d; 其中搜索不可用 %d), '
+        '%d 组直播, ads 拦截 %d 条' % (
+            len(sites), len(alive), max(0, len(alive) - MAX_SITES), no_search,
+            len(lives), len(cfg['ads'])))
 
     kept = [s for s in scored if s.get('state') != '剔除']
-    kept.sort(key=lambda s: s['score'] if s.get('score') is not None else 0.6,
-              reverse=True)
-    write_store(kept, len(sites), os.environ.get('GITHUB_REPOSITORY', ''),
-                bool(channels))
+    # v7: 真仓在前、按分数降序; 导航入口只进报告不进 store.json
+    kept.sort(key=lambda s: (1 if s.get('kind') != 'nav' else 0,
+                             s.get('score') or 0), reverse=True)
+    # v3: 导航仓重建清理版(死子仓不拖累整仓); v4: 清理版参与前3竞争
+    multi_entries = write_multi_files(scored, nav_children)
+    write_store(kept, os.environ.get('GITHUB_REPOSITORY', ''),
+                bool(channels), multi_entries)
     write_report(items, alive, suspect, deadlist, scored, channels,
                  up_stats, now)
     log('report.md 已生成')
@@ -1392,4 +2262,10 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    # v7: 顶层兜底 —— 打出完整堆栈再以非零码退出.
+    # 非零退出会让 workflow 那一步失败, 从而不会把半成品 commit 上去
+    try:
+        main()
+    except Exception:
+        traceback.print_exc()
+        sys.exit(1)
