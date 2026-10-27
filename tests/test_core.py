@@ -349,71 +349,168 @@ def _channels():
 
 
 def test_write_live():
+    """v12: 主力源 live.txt(一台一行/多线路 # 分隔); m3u 退回每台 1 条
+    这是"电视上一台显示成3个"的根治点 —— m3u 写几条就是几个台。"""
     tmp = tempfile.mkdtemp()
-    olds = (cs.LIVE_JSON, cs.LIVE_M3U)
+    olds = (cs.LIVE_JSON, cs.LIVE_M3U, cs.LIVE_TXT)
     try:
         cs.LIVE_JSON = os.path.join(tmp, 'live.json')
         cs.LIVE_M3U = os.path.join(tmp, 'live.m3u')
+        cs.LIVE_TXT = os.path.join(tmp, 'live.txt')
         lives = cs.write_live(_channels())
         assert [g['group'] for g in lives] == ['央视', '中国香港']
         assert lives[0]['channels'][0]['urls'][0] == 'http://a/1a.m3u8'
+
+        # ---- live.txt: 电视上真正在用那份 ----
+        txt = open(cs.LIVE_TXT, encoding='utf-8').read()
+        assert '央视,#genre#' in txt, txt
+        assert '中国香港,#genre#' in txt, txt
+        # 一台一行, 主线路在前, 备线用 # 串在同一行
+        assert 'CCTV-1 综合,http://a/1a.m3u8#http://a/1b.m3u8' in txt, txt
+        assert '凤凰卫视资讯台,http://b/p.m3u8' in txt, txt
+        # 核心: 每个台名只出现一次
+        assert txt.count('CCTV-1 综合') == 1, txt
+        assert txt.count('凤凰卫视资讯台') == 1, txt
+
+        # ---- live.m3u: 每台 1 条(写多了就是一个台变三个) ----
         m3u = open(cs.LIVE_M3U, encoding='utf-8').read()
-        # v10: 每台写满3条备源(用户拍板"每台3个源") —— CCTV-1 有2条就写2条,
-        # 凤凰只有1条就写1条; 顺序保持主线路在前
-        assert m3u.count('#EXTINF') == 3
-        assert m3u.count('CCTV-1 综合') == 2      # 同名多行 = 同一台的多个源
-        assert 'CCTV-1 综合' in m3u and '凤凰卫视资讯台' in m3u
-        assert 'http://a/1b.m3u8' in m3u          # 备线现在也进 m3u
-        assert m3u.index('http://a/1a.m3u8') < m3u.index('http://a/1b.m3u8')
-        # 每行 EXTINF 后面必须紧跟一个 URL(别写成 2 个台名挤在一起共用一个地址)
-        assert len([l for l in m3u.splitlines() if l.startswith('http')]) == 3
+        assert m3u.count('#EXTINF') == 2, m3u
+        assert m3u.count('CCTV-1 综合') == 1, m3u
+        assert m3u.count('凤凰卫视资讯台') == 1, m3u
+        assert 'http://a/1a.m3u8' in m3u          # 主线路保留
+        assert 'http://a/1b.m3u8' not in m3u      # 备线不进 m3u, 交给 txt
+        assert len([l for l in m3u.splitlines() if l.startswith('http')]) == 2
+
+        # ---- live.json: 备线全量保留(给认这个格式的播放器) ----
         j = json.load(open(cs.LIVE_JSON, encoding='utf-8'))
         assert j['lives'][0]['channels'][0]['urls'] == [
             'http://a/1a.m3u8', 'http://a/1b.m3u8']
     finally:
-        cs.LIVE_JSON, cs.LIVE_M3U = olds
+        cs.LIVE_JSON, cs.LIVE_M3U, cs.LIVE_TXT = olds
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_live_txt_escape():
+    """v12: 台名里的逗号会把 txt 行切错, 建库时必须兜住
+    (上游池随时可能冒出 "CCTV-5 体育,高清" 这种名字)"""
+    tmp = tempfile.mkdtemp()
+    olds = (cs.LIVE_JSON, cs.LIVE_M3U, cs.LIVE_TXT)
+    try:
+        cs.LIVE_JSON = os.path.join(tmp, 'live.json')
+        cs.LIVE_M3U = os.path.join(tmp, 'live.m3u')
+        cs.LIVE_TXT = os.path.join(tmp, 'live.txt')
+        cs.write_live([
+            {'name': 'CCTV-5,体育', 'group': '央视', 'n_hd': 1,
+             'urls': [{'url': 'http://a/x.m3u8', 'w': 1280, 'h': 720,
+                       'method': 'ffmpeg', 'ms': 100}]},
+        ])
+        txt = open(cs.LIVE_TXT, encoding='utf-8').read()
+        # 逗号被替换成空格, 一行仍然是 "台名,地址" 两段
+        assert 'CCTV-5 体育,http://a/x.m3u8' in txt, txt
+        line = [l for l in txt.splitlines() if l.startswith('CCTV')][0]
+        assert line.count(',') == 1, line
+    finally:
+        cs.LIVE_JSON, cs.LIVE_M3U, cs.LIVE_TXT = olds
         shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _scored():
+    """v12: 每条要有通道画像字段(gh_rate/sites_n/jar_rate) ——
+    write_store 现在按"GitHub依赖升序 > 分数 > jar率 > 站点数"排序,
+    并且 sites_n<=0 或 gh_rate>STORE_GH_MAX 的一律不收。
+    没这些字段的仓会被当成空仓淘汰, 所以测试数据必须带齐。"""
     return [
         {'url': 'http://s0/nav.json', 'name': '多仓导航', 'kind': 'nav',
-         'score': None, 'state': '保留', 'alive': 0, 'total': 0},
+         'score': None, 'state': '保留', 'alive': 0, 'total': 0,
+         'gh_rate': 0.0, 'sites_n': 0, 'jar_rate': 0.0},
         {'url': 'http://s1/a.json', 'name': '完美仓A', 'kind': 'store',
-         'score': 1.0, 'state': '保留', 'alive': 10, 'total': 10},
+         'score': 1.0, 'state': '保留', 'alive': 10, 'total': 10,
+         'gh_rate': 0.0, 'sites_n': 46, 'jar_rate': 0.93},
         {'url': 'http://s2/b.json', 'name': '降分仓B', 'kind': 'store',
-         'score': 0.94, 'state': '保留', 'alive': 9, 'total': 9},
+         'score': 0.94, 'state': '保留', 'alive': 9, 'total': 9,
+         'gh_rate': 0.0, 'sites_n': 9, 'jar_rate': 0.5},
         {'url': 'http://s5/e.json', 'name': '完美仓E', 'kind': 'store',
-         'score': 1.0, 'state': '保留', 'alive': 8, 'total': 8},
+         'score': 1.0, 'state': '保留', 'alive': 8, 'total': 8,
+         'gh_rate': 0.0, 'sites_n': 8, 'jar_rate': 0.6},
         {'url': 'http://s3/c.json', 'name': '补位仓C', 'kind': 'store',
-         'score': 0.92, 'state': '保留', 'alive': 11, 'total': 12},
+         'score': 0.92, 'state': '保留', 'alive': 11, 'total': 12,
+         'gh_rate': 0.0, 'sites_n': 12, 'jar_rate': 0.4},
         {'url': 'http://s4/d.json', 'name': '死仓D', 'kind': 'store',
-         'score': 0.5, 'state': '剔除', 'alive': 5, 'total': 10},
+         'score': 0.5, 'state': '剔除', 'alive': 5, 'total': 10,
+         'gh_rate': 0.0, 'sites_n': 10, 'jar_rate': 0.3},
+        # v12 核心: 298 站全活的"高分仓", 但 99% 子资源在 GitHub 上
+        # -> 电视上点进去就是无限转圈, 必须被拒
+        {'url': 'http://s6/f.json', 'name': '转圈仓F', 'kind': 'store',
+         'score': 1.0, 'state': '保留', 'alive': 298, 'total': 298,
+         'gh_rate': 0.99, 'sites_n': 298, 'jar_rate': 0.24},
     ]
 
 
 def test_write_store_selection():
+    """v12: 清单 = 我的直播 + 最多3个"点进去真能用"的仓
+    与 v10 的差别: 我的影视只在有站点时挂; 通道太差的仓一票否决"""
     tmp = tempfile.mkdtemp()
     old = cs.STORE
     try:
         cs.STORE = os.path.join(tmp, 'store.json')
         kept = [s for s in _scored() if s['state'] != '剔除']
+        # mine_sites 默认 0 -> 不挂"我的影视"(否则电视上是个红点)
         cs.write_store(kept, 'owner/repo', True, [])
         cfg = json.load(open(cs.STORE, encoding='utf-8'))
         names = [e['sourceName'] for e in cfg['storeHouse']]
-        # v10: 自己那份配置也进 store(ads 只在播放器直接加载的配置里生效)
-        assert names[0] == '我的影视', names
-        assert names[1] == '我的直播', names
-        assert '完美仓A 100分' in names
-        assert '完美仓E 100分' in names          # 两个完美仓都进
-        # v10: 外部仓只留2个(自己占1个位置, 合计仍3个入口) —— 降分仓挤不进
-        assert '降分仓B 94分' not in names
-        assert '补位仓C 92分' not in names
-        assert '死仓D 50分' not in names
+        assert names[0] == '我的直播', names
+        assert '我的影视' not in names, 'tvbox.json 无站点时不该挂(红点废源)'
+        # 三个直连仓按 分数 > 站点数 排进去
+        assert '完美仓A 100分' in names, names
+        assert '完美仓E 100分' in names, names
+        assert '降分仓B 94分' in names, names
+        # 第4个直连仓被 STORE_TOP_N=3 截断
+        assert '补位仓C 92分' not in names, names
+        assert '死仓D 50分' not in names, names
         assert all('多仓导航' not in n for n in names)
+        # v12 核心断言: 99% GitHub 依赖的仓再高分也不能进
+        assert all('转圈仓F' not in n for n in names), names
+        assert sum(1 for n in names if '分' in n) == 3, names
         # 电视端地址必须带代理前缀(裸 raw 在盒子上拉不动)
         assert cfg['storeHouse'][0]['sourceUrl'].startswith(cs.GH_PROXY)
-        assert cfg['storeHouse'][1]['sourceUrl'].startswith(cs.GH_PROXY)
+    finally:
+        cs.STORE = old
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_write_store_rejects_gh_heavy():
+    """v12: 只有 GH 依赖超标的仓时, 走放宽兜底(不能输出空清单)"""
+    tmp = tempfile.mkdtemp()
+    old = cs.STORE
+    try:
+        cs.STORE = os.path.join(tmp, 'store.json')
+        bad = [s for s in _scored() if s['name'] == '转圈仓F']
+        cs.write_store(bad, 'owner/repo', True, [])
+        cfg = json.load(open(cs.STORE, encoding='utf-8'))
+        names = [e['sourceName'] for e in cfg['storeHouse']]
+        # 放宽时也要挂上(空清单等于点播全废), 但名字里带 G99 标记
+        assert any('转圈仓F' in n for n in names), names
+        assert any('G99' in n for n in names), names
+    finally:
+        cs.STORE = old
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_write_store_mine_only_when_sites():
+    """v12: tvbox.json 有站点才挂"我的影视" —— 空壳挂上去就是红点"""
+    tmp = tempfile.mkdtemp()
+    old = cs.STORE
+    try:
+        cs.STORE = os.path.join(tmp, 'store.json')
+        kept = [s for s in _scored() if s['state'] != '剔除']
+        cs.write_store(kept, 'owner/repo', True, None, mine_sites=12)
+        names = [e['sourceName'] for e in
+                 json.load(open(cs.STORE, encoding='utf-8'))['storeHouse']]
+        assert '我的影视' in names, names
+        cs.write_store(kept, 'owner/repo', True, None, mine_sites=0)
+        names = [e['sourceName'] for e in
+                 json.load(open(cs.STORE, encoding='utf-8'))['storeHouse']]
+        assert '我的影视' not in names, names
     finally:
         cs.STORE = old
         shutil.rmtree(tmp, ignore_errors=True)
@@ -522,6 +619,85 @@ def test_circuit_breaker():
     assert ok and '接口数' in why, why
 
 
+# ---------------- v12: 子资源通道画像 ----------------
+# 这一组守的是"点进去会不会转圈"—— 2026-10-27 查实的根因:
+# 配置 json 几十KB走代理也能拉到(所以"仓能打开"), 但仓里的 jar/外挂js
+# 动辄几MB、几十上百个, 全压在 21KB/s 的 gh-proxy 上就永远转圈。
+
+def test_is_gh_url():
+    """各类 GitHub 加速代理都按 GitHub 系计(转发内容仍来自 GitHub, 速度同样受限)"""
+    assert cs.is_gh_url('https://raw.githubusercontent.com/a/b')
+    assert cs.is_gh_url(
+        'https://gh-proxy.com/https://raw.githubusercontent.com/a/b')
+    assert cs.is_gh_url('https://ghproxy.cn/https://raw.githubusercontent.com/a')
+    assert cs.is_gh_url('https://ghfast.top/https://raw.githubusercontent.com/a')
+    assert cs.is_gh_url(
+        'https://github.moeyy.xyz/https://raw.githubusercontent.com/a/b')
+    # 直连域名不算
+    assert not cs.is_gh_url('https://ztha.top/TVBox/ztha.jar')
+    assert not cs.is_gh_url('https://qiniu.gongxueyun.com/upload/x.jar')
+    assert not cs.is_gh_url('https://6800.kstore.vip/fish.json')
+    assert not cs.is_gh_url('https://git.acwing.com/a/b/-/raw/main/x.json')
+    assert not cs.is_gh_url('')
+    assert not cs.is_gh_url(None)
+
+
+def test_cdn_profile_direct_store():
+    """直连仓: 配置与 jar 同域 -> GH依赖 0%, 全部 csp_ -> jar率 100%"""
+    cfg = {'spider': './ztha.jar;md5;097bfd13', 'sites': [
+        {'api': 'csp_A'}, {'api': 'csp_B'}, {'api': 'csp_C'}]}
+    p = cs.cdn_profile(cfg, 'https://ztha.top/TVBox/thdjk.json')
+    assert p['sites'] == 3
+    assert p['jar_packed'] == 3
+    assert p['gh_rate'] == 0.0, p
+    assert p['gh_cnt'] == 0
+
+
+def test_cdn_profile_inherits_github():
+    """同一份配置, 放在 GitHub 上 -> 相对路径也算 GitHub 系"""
+    cfg = {'spider': './jar/pg.jar;md5;abc', 'sites': [{'api': 'csp_A'}]}
+    p = cs.cdn_profile(cfg, 'https://raw.githubusercontent.com/u/r/master/x.json')
+    assert p['gh_rate'] == 1.0, p
+    p = cs.cdn_profile(
+        cfg, 'https://gh-proxy.com/https://raw.githubusercontent.com/u/r/x.json')
+    assert p['gh_rate'] == 1.0, p
+
+
+def test_cdn_profile_detects_turn_circle():
+    """外挂 js 全压在 GitHub 上的仓 -> 必须超门槛(实地表现就是一直转圈)"""
+    sites = [{'api': './lib/drpy2.min.js', 'ext': './js/s%d.js' % i}
+             for i in range(10)]
+    cfg = {'spider': './jar/pg.jar', 'sites': sites}
+    p = cs.cdn_profile(
+        cfg, 'https://gh-proxy.com/https://raw.githubusercontent.com/'
+             'gaotianliuyun/gao/master/js.json')
+    assert p['res_total'] > 10, p          # 每个站 2 个外挂资源
+    assert p['gh_rate'] > cs.STORE_GH_MAX, p
+    assert p['gh_cnt'] == p['res_total'], p
+
+
+def test_cdn_profile_mixed():
+    """混合仓: 一半直连一半 GitHub -> 比例落在中间"""
+    cfg = {'spider': 'https://qiniu.a.com/j.jar', 'sites': [
+        {'api': 'http://cms1.com/api.php/provide/vod/'},
+        {'api': 'http://cms2.com/api.php/provide/vod/'},
+        {'api': 'https://raw.githubusercontent.com/x/y/z.js'},
+    ]}
+    p = cs.cdn_profile(cfg, 'https://a.com/cfg.json')
+    assert p['gh_cnt'] == 1, p
+    assert p['res_total'] == 4, p
+    assert abs(p['gh_rate'] - 0.25) < 1e-6, p
+
+
+def test_cdn_profile_malformed():
+    """畸形结构不能崩(仓配置是外部数据, 什么都可能有)"""
+    assert cs.cdn_profile({})['sites'] == 0
+    assert cs.cdn_profile({'sites': {'a': 1}})['sites'] == 0
+    assert cs.cdn_profile({'sites': ['x', 1, None]})['sites'] == 0
+    assert cs.cdn_profile(None)['gh_rate'] == 0.0
+    assert cs.cdn_profile({'spider': 123, 'sites': []})['sites'] == 0
+
+
 def test_is_perfect_store():
     """v9: 大仓容错 —— 小仓仍要 100%, 大仓允许死 1 个"""
     assert cs.is_perfect_store({'score': 1.0, 'total': 3, 'alive': 3}) is True
@@ -538,16 +714,18 @@ def test_is_perfect_store():
 
 
 def test_store_prefers_big_store():
-    """v9: 同样完美时, 内容多(站点多)的仓排前面"""
+    """v9: 同样完美时, 内容多(站点多)的仓排前面 (v12 保留, 排在 GH 依赖之后)"""
     tmp = tempfile.mkdtemp()
     old = cs.STORE
     try:
         cs.STORE = os.path.join(tmp, 'store.json')
         scored = [
             {'url': 'http://s/small.json', 'name': '小仓', 'kind': 'store',
-             'score': 1.0, 'alive': 3, 'total': 3, 'state': '保留'},
+             'score': 1.0, 'alive': 3, 'total': 3, 'state': '保留',
+             'gh_rate': 0.0, 'sites_n': 3, 'jar_rate': 1.0},
             {'url': 'http://s/big.json', 'name': '大仓', 'kind': 'store',
-             'score': 0.995, 'alive': 199, 'total': 200, 'state': '保留'},
+             'score': 0.995, 'alive': 199, 'total': 200, 'state': '保留',
+             'gh_rate': 0.0, 'sites_n': 200, 'jar_rate': 0.6},
         ]
         cs.write_store(scored, '', False, [])
         cfg = json.load(open(cs.STORE, encoding='utf-8'))
