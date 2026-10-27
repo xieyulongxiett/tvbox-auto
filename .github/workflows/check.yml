@@ -3,6 +3,9 @@ name: auto-check-sources
 # v6: 核对四件事 —— ① cron 是 UTC(北京5点=前一天21点) ② contents:write
 # ③ git add -A(否则 rmtree 掉的旧 multi/mN.json 删不掉) ④ ffmpeg 兜底安装
 # v7: 加一步 Unit tests —— 纯函数回归 3 秒出结果, 比跑完一轮(10分钟)才发现问题便宜得多
+# v12: ffmpeg 那步加固 + job 超时 60->30 —— 2026-10-27 那轮 apt-get update 卡在
+#      镜像上占了 2066 秒(34分钟), 而 job 上限 60 分钟, 于是既不失败也不结束,
+#      白挂一小时。以前每次都是 0 秒跳过(镜像自带 ffprobe), 那天镜像恰好缺了。
 
 on:
   schedule:
@@ -21,7 +24,9 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # v12: 60 -> 30。脚本本体 7~9 分钟(含多仓展开体检), 30 分钟足够;
+    # 任何一步卡死最多半小时掐断, 不再出现"挂满一小时"的僵尸 run
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,14 +41,24 @@ jobs:
       - name: Unit tests (no network)
         run: python tests/test_core.py
 
-      # ubuntu-latest 自带 ffmpeg，这里兜底：万一镜像变了也不会全盘测不出分辨率
+      # v12: ffmpeg 加固。三条原则: 能跳过就跳过、装不上就限时放弃、
+      # 放弃了也继续跑(脚本有降级分支: 没有 ffprobe 时只探活不测画质)。
+      # 关键改动是**去掉了 apt-get update** —— 它是那 34 分钟的真正原因
+      # (拉索引时镜像抽风), 而 runner 的包索引本来就是现成的。
       - name: Ensure ffmpeg
         run: |
-          command -v ffprobe >/dev/null 2>&1 || {
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq ffmpeg
-          }
-          ffprobe -version | head -1
+          if command -v ffprobe >/dev/null 2>&1; then
+            echo "ffprobe 已在镜像里: $(ffprobe -version 2>&1 | head -1)"
+            exit 0
+          fi
+          echo "::warning::runner 上没有 ffprobe, 尝试 apt 安装(限时 240 秒)"
+          timeout 240 sudo apt-get install -y -qq \
+            -o Acquire::http::Timeout=15 \
+            -o Acquire::https::Timeout=15 \
+            -o Acquire::Retries=1 \
+            ffmpeg \
+            || echo "::warning::apt 安装失败/超时, 本轮降级为只探活不测画质(不影响出配置)"
+          ffprobe -version 2>&1 | head -1 || echo "确认无 ffprobe, 按降级模式继续"
 
       - name: Install optional fallback
         run: pip install --quiet imageio-ffmpeg || true
