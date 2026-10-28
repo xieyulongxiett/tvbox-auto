@@ -148,12 +148,19 @@ def load_live(path):
         ln = ln.strip()
         if not ln:
             continue
-        if ln.startswith('#') or ',' not in ln:
-            group = ln.replace('#genre#', '').replace('#', '').strip()
+        # 分组行形如 "央视,#genre#" —— 它也含逗号, 不先剔掉就会被当成一个
+        # 名叫"央视"、线路叫"genre"的频道(本机实测踩到过: 台数变成 62 而不是 58,
+        # 报告里"播不了的台"第一个就是"央视")
+        if ln.startswith('#') or '#genre#' in ln or ',' not in ln:
+            # 分组行形如 "央视,#genre#": 取逗号前的部分。直接 replace('#genre#','')
+            # 会把逗号留下, 写回时变成 "央视,,#genre#"(本机实测踩到过)
+            group = ln.split(',')[0].replace('#', '').strip()
             continue
         name, urls = ln.split(',', 1)
-        rows.append((group, name.strip(),
-                     [u for u in urls.split('#') if u.strip()]))
+        us = [u for u in urls.split('#') if u.strip()]
+        if not us:
+            continue
+        rows.append((group, name.strip(), us))
     return rows
 
 
@@ -187,6 +194,12 @@ def main():
     ap.add_argument('-o', '--out', default='.', help='输出目录')
     ap.add_argument('-w', '--workers', type=int, default=12, help='并发数')
     args = ap.parse_args()
+
+    # 输出目录必须先建好: 拉线上 live.txt 时就要往这里落盘, 晚一步就是
+    # FileNotFoundError(本机实测踩到过 —— 报错看起来像网络问题, 其实是目录不存在)
+    outdir = args.out
+    if outdir and not os.path.isdir(outdir):
+        os.makedirs(outdir, exist_ok=True)
 
     src = args.live
     if not src:
@@ -232,7 +245,6 @@ def main():
             bad.append((n, best))
         out_rows.append((g, n, scored, best))
 
-    outdir = args.out
     # ① live_sorted.txt
     p1 = os.path.join(outdir, 'live_sorted.txt')
     with open(p1, 'w', encoding='utf-8') as f:
