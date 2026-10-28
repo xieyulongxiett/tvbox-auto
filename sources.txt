@@ -54,10 +54,15 @@ L|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u | iptv-o
 L|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/hk.m3u | iptv-org香港
 L|https://raw.githubusercontent.com/suxuang/myIPTV/main/ipv4.m3u | suxuang合集
 L|https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/index.m3u | fanmingming主源
-# v17: 新增移动 IPTV 专池 —— 源全是 39.134.x/39.135.x 中国移动自有 IP,
-#      PLTV/88888888 标准平台路径, 0 条需鉴权(无 Authinfo, 不像 strong/live 那样会过期)。
-#      内容: 央视 18 + 卫视 24 + 湖南卫视 + 移动专区 78 = 124 条。
-#      为什么加它 —— 家里宽带是中国移动, 本网源最快、且运营商 IPTV 平台不带第三方贴片广告。
-#      注意: 境外检测机连不上移动内网 -> 大概率落 cn_blind 补位,
-#            真正排到第一条要等家里跑完 speedtest_live.py 生成 speed_rank.json
-L|https://gh-proxy.com/https://raw.githubusercontent.com/suxuang/myIPTV/main/%E7%A7%BB%E5%8A%A8IPTV.m3u | 移动IPTV专池
+# ---- v18: 移动 IPTV 专池已注释掉(2026-10-28 家里移动宽带实测不可用) ----
+# 实测环境: 湖南长沙 中国移动宽带, 出口为移动公网 IP(非 IPTV 专网), 公网 80 正常
+# 实测结果: 抽 36 条(央视 18 + 卫视/专区 18) -> 100% 8 秒超时, 0 条出流
+# 分层取证: ping 39.134.65.106 通(0% 丢包, 59ms), tracert 第 10 跳直达目标,
+#           但 TCP 80 / TCP 554 全部静默丢弃 -> 网络层可达, 应用层不放行
+# 结论: 运营商 IPTV 单播只对机顶盒所在专网/白名单 IP 服务, 普通宽带出口进不去;
+#       URL 里没有 Authinfo 不等于开放(鉴权在网络层做), 跨省更不可能。
+#       电视是网线接路由器, 出口和电脑同一个, 结论对电视同样成立。
+# 直接后果: v17 把它加进来后, 每轮 Actions 白拉 124 条、逐条白测, 产出 0 条
+#           (10-28 那份 live.txt 里 39.134/39.135 线路为 0 条, 即此故)。
+# 保留位置备查: 哪天家里真办了 IPTV 专线(机顶盒网口直连), 把下面一行放开即可。
+# L|https://gh-proxy.com/https://raw.githubusercontent.com/suxuang/myIPTV/main/%E7%A7%BB%E5%8A%A8IPTV.m3u | 移动IPTV专池

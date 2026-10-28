@@ -294,6 +294,41 @@ v15 (2026-10-28): 按"机器在哪"分流 —— 治"干净源进不来"的根 -
      让用户看懂"为什么某个 IP 扛 22 个台却没被砍";
   ⑤ 测试 56 → 61 项(归属判据 / 未知归属 / 干净源识别 / 盲源补位不挤实测线)
 
+v18 (2026-10-28): 线路级 300kbps 硬门槛 —— 治"点开就跳台"
+  用户在家里跑完 tools/speedtest_live.py 后拍板: "只保留达到 300 的线路,
+  没达到的不要; 52 台降到 13 台没关系"。数据背景: 58 台 173 条线路里,
+  >=300kbps 的只有 **17 条 / 13 个台**, 其余 45 个台(含 16 个 CCTV)
+  在湖南移动宽带上一条都出不了流 —— 留着它们不是"多一个选择", 而是
+  "点进去就跳台"(TVBox 在某台所有线都播不动时自动往下跳频道)。
+  ① LIVE_MIN_KBPS=300 变成**硬门槛**: 实测过的线 <300 删、没测过的也删;
+     和 v16 的 should_drop_by_speed 区别是粒度 —— 那个只看整台(三线全废才删台),
+     这个是逐条删, 因为电视只播第一条, 87kbps 的线留着不是备而不用;
+  ② 安全阀 LIVE_MIN_CHANNELS=5: 过滤后活下来的台少于 5 个, 说明
+     speed_rank.json 缺失/过期/格式错, **整轮放弃过滤**退回 v17 行为。
+     宁可给出一份含卡台的清单, 也不能因为一个数据文件把 live.txt 写成空的
+     (电视上就是"直播全空", 比卡顿难查一百倍);
+  ③ inject_pinned(): 家里实测够用的线强制进最终名单并排第一条。不补这步会有
+     致命漏: 家里能播的那条(境外探不通, 落 cn_blind)会被"实测线已够3条"的
+     补位逻辑挤掉, 剩下 3 条境外线又都没做家里实测 -> 全被门槛删 -> 整台消失;
+  ④ pick_candidates(): 候选三档优先(钉住的实测好线 > 公网 host > 内网/校园网
+     host)。起因: 实测线上三次 run 的线路集合, 相隔 3 小时只重叠 95%, 另一组
+     只重叠 53% —— 候选按上游轮转取, 今天测出 5000kbps 的线明天根本没被探,
+     一轮轮损耗光, 清单自己缩没;
+  ⑤ 央视专项: 央视台候选名额 16 -> LIVE_CCTV_CAND(24), 且 .edu.cn / 私有网段 /
+     :8000 这类"家里进不去"的 host 在候选排序里沉到最末, 让公网源先被探。
+     只提高命中率, 不硬塞(内网源塞进去也播不了);
+  ⑥ 新增产物 live_cand.txt: 每台最多 6 条候选(2 条已知够用的复查 + 4 条没测过的
+     找新线), 覆盖全部频道 —— 只给家里测速脚本用, 电视端不用填。没有它,
+     live.txt 只剩十几个台之后, 那四十多个台的线永远进不了测速视野;
+  ⑦ speed_rank.json 兼容新格式(带 updated 时间戳), 超过 LIVE_RANK_TTL_DAYS=14
+     天当没测过 —— 过期数据会把已死的老线当"实测够快"钉在第一位;
+  ⑧ tools/speedtest_live.py: 默认改拉 live_cand.txt; 修两个 bug ——
+     http_text 加字节/时长上限(flv/ts 直链会把整个视频文件当文本读完, 10-28
+     那次最后 13 条耗了 28 分钟就是它)、flv/ts/无后缀直链改按字节流测速
+     (以前当 m3u8 解析, 一律判 0, 173 条里 28 条被冤枉);
+  ⑨ 测试 67 -> 76 项(门槛过滤 / 安全阀 / 钉住好线 / 候选分档 / 候选池 /
+     新旧格式与 TTL / live_cand 输出)
+
 用法:
   python check_sources.py [--sources 路径] [--gitee]
 """
@@ -511,6 +546,36 @@ IPTV_INNER_PORTS = (':8006', ':8022')
 # 本地实测速度回流: 家里跑 tools/speedtest_live.py 生成后提交, 下一轮生效
 SPEED_RANK_FILE = 'speed_rank.json'
 LIVE_SPEED_OK = 300       # kbps。720p 直播流畅需要 ~1.5Mbps, 低于此值必卡
+
+# ---- v18: 线路级速度硬门槛(用户 2026-10-28 拍板) ----
+# 起因: v16/v17 只把 300kbps 当"排序参考" —— 家里实测 87kbps 的线照样写进
+#   live.txt, 只是排在后面。而电视默认播第一条, 排在后面的等于没有; 更要命的是
+#   TVBox 在某台所有线都播不动时会自动往下跳台, 表现成"点 CCTV-2 却跳到 CCTV-5"。
+# 拍板口径(用户原话: "只保留达到 300 的线路, 没达到的不要; 52 台降到 13 台没关系"):
+#   家里实测过且 >= LIVE_MIN_KBPS  -> 收
+#   家里实测过但 < LIVE_MIN_KBPS   -> 删
+#   从没测过的                      -> 也不收(严格模式)
+# 依据: 2026-10-28 家里 173 条线路实测, >=300 的只有 17 条 / 13 个台 —— 剩下
+#   45 个台(含 16 个 CCTV)在湖南移动宽带上一条都出不了流, 留着只是"点进去跳台"。
+LIVE_MIN_KBPS = LIVE_SPEED_OK
+# 安全阀: 过滤后活下来的台少于这个数, 说明 speed_rank.json 过期/丢失/格式错。
+# 此时**整轮放弃过滤**, 退回 v17 行为 —— 宁可给出今天这份(含卡台)的清单, 也不能
+# 因为一个数据文件缺失把 live.txt 写成空文件(电视上就是"直播全空", 更难查)。
+LIVE_MIN_CHANNELS = 5
+# 测速表有效期: 超过这么多天就当没测过。过期数据比没有更危险 —— 会把一条已经
+# 死掉的老线当成"实测够快"钉在清单第一位。只对新格式(带 updated 字段)生效。
+LIVE_RANK_TTL_DAYS = 14
+# 央视专项: 免费公网央视源本就稀少, 候选里大量是高校教育网/运营商专网 IP
+# (家里公网连不上, 实测 0 条出流), 每台 16 条名额会被它们占满。所以:
+#   ① 央视台候选名额提到 24 条
+#   ② 明显内网/校园网 host 在候选排序里降到最末, 保证公网源先被探
+LIVE_CCTV_CAND = LIVE_MAX_CAND + 8
+LIVE_CCTV_PREFIX = 'CCTV'
+# 候选池产物: 给家里测速脚本喂料。live.txt 过了门槛只剩十几个台之后, 被删掉的
+# 四十多个台就再也不会出现在测速视野里 —— 没有这个文件, 清单只会一路缩下去。
+LIVE_CAND_TXT = os.path.join(HERE, 'live_cand.txt')
+LIVE_CAND_KEEP = 6      # 每台最多写几条候选
+LIVE_CAND_GOOD = 2      # 其中前几条留给"已知够用"的线(复查有没有掉速)
 LIVE_START_CHECK = 4    # 每台做"起播快照"的候选数(浅探后按快/高清排序取前N)
 LIVE_START_GAP = 6      # 两次快照间隔(秒); 全局只等这一轮, 不是每条各等一次
 # 静态贴片判据: 相对倍数为主, 绝对秒数只做下限(防 1~2 秒切片被倍数判据误伤)
@@ -1808,16 +1873,47 @@ def pick_ad_hosts(host_map, geo=None, min_ch=None):
 
 def load_speed_rank():
     """v16: 读家里实测的速度表 {url: kbps}(由 tools/speedtest_live.py 生成)。
-    文件不存在返回空 dict —— 没测过就纯按静态特征排, 不影响主流程。"""
+    文件不存在返回空 dict —— 没测过就纯按静态特征排, 不影响主流程。
+
+    v18: 兼容两种格式 ——
+      老格式(现线上那份): {url: kbps}
+      新格式: {"updated": "2026-10-28 21:00", "rank": {url: kbps}}
+    新格式带时间戳, 超过 LIVE_RANK_TTL_DAYS 天就当没测过。为什么要过期:
+    300 硬门槛下, 一份两周前的测速表会把"当时快、现在已死"的线当成实测够快,
+    钉在清单第一位 —— 那比没有数据更糟(用户看到的就是那个台打不开)。"""
+    path = os.path.join(HERE, SPEED_RANK_FILE)
     try:
-        with open(os.path.join(HERE, SPEED_RANK_FILE), encoding='utf-8') as f:
+        with open(path, encoding='utf-8') as f:
             d = json.load(f)
-        if isinstance(d, dict):
-            return {k: float(v) for k, v in d.items()
-                    if isinstance(v, (int, float))}
     except Exception:
-        pass
-    return {}
+        return {}
+    if not isinstance(d, dict):
+        return {}
+    updated, rank = None, d
+    if isinstance(d.get('rank'), dict):
+        rank = d['rank']
+        updated = as_str(d.get('updated'))
+    out = {k: float(v) for k, v in rank.items()
+           if isinstance(v, (int, float)) or
+           (isinstance(v, str) and re.match(r'^\d+(\.\d+)?$', v.strip()))}
+    if updated and LIVE_RANK_TTL_DAYS > 0:
+        ts = None
+        for fmt in ('%Y-%m-%d %H:%M', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M',
+                    '%Y-%m-%d'):
+            try:
+                ts = datetime.strptime(updated.strip()[:19], fmt)
+                break
+            except Exception:
+                continue
+        if ts is not None:
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone(timedelta(hours=8)))
+            age = (datetime.now(timezone(timedelta(hours=8))) - ts).days
+            if age > LIVE_RANK_TTL_DAYS:
+                log('[速度回流] %s 已 %d 天未更新(阈值 %d 天), 本轮当作没测过'
+                    % (SPEED_RANK_FILE, age, LIVE_RANK_TTL_DAYS))
+                return {}
+    return out
 
 
 def should_drop_by_speed(urls, speed):
@@ -1835,6 +1931,152 @@ def should_drop_by_speed(urls, speed):
         if x.get('url') not in speed:
             return False
     return all(speed[x['url']] < LIVE_SPEED_OK for x in urls)
+
+
+# ---- v18: 300 硬门槛 / 候选池 / 央视名额 ----
+
+def filter_urls_by_speed(urls, speed):
+    """v18: 线路级 300 硬门槛。返回 (留下的线路, 被删的 [(url, kbps 或 None)])。
+
+    口径(用户拍板): 实测 >= LIVE_MIN_KBPS 留; 实测 < 删; 没测过的也删。
+    和 v16 的 should_drop_by_speed 的区别是**处理粒度**: 那个只看整台(三线全废
+    才删台), 这是逐条删 —— 因为电视默认只播第一条, 一条 87kbps 的线留在清单里
+    不是"备而不用", 是"点开就卡"。"""
+    if not speed:
+        return list(urls), []
+    keep, drop = [], []
+    for x in urls:
+        k = speed.get(x['url'])
+        if k is None:
+            drop.append((x['url'], None))
+        elif k >= LIVE_MIN_KBPS:
+            keep.append(x)
+        else:
+            drop.append((x['url'], k))
+    return keep, drop
+
+
+def inject_pinned(urls, pool, speed=None):
+    """v18: 把"家里实测够用"的线顶到名单最前面(最多 LIVE_KEEP 条)。
+
+    不补这一步会有一个致命漏: 某台有 1 条家里实测 4000kbps 的线(境外探不通,
+    落在 cn_blind), 而境外同时探到 3 条高清线 —— pick_live_urls 看到"实测线已有
+    3 条"就不再收盲源, 那条家里唯一能播的线被挤掉; 剩下 3 条境外线又都没做过
+    家里实测, 全被 300 门槛删掉, 整台因此消失。用户看到的就是"明明测出来能看的
+    台不见了"。所以这里强制把它顶到第一位 —— 电视也只播第一条。"""
+    speed = speed or {}
+    pinned = [x for x in pool if speed.get(x['url'], 0) >= LIVE_MIN_KBPS]
+    if not pinned:
+        return urls
+    pinned.sort(key=lambda x: -speed.get(x['url'], 0))
+    pinned = pinned[:LIVE_KEEP]
+    pu = {p['url'] for p in pinned}
+    return (pinned + [x for x in urls if x['url'] not in pu])[:LIVE_KEEP]
+
+
+def apply_speed_gate(channels, speed):
+    """v18: 300 硬门槛裁决 + 安全阀。返回 (channels, mode, valve, dead, n_slow)。
+
+    入参 channels 每项需带 urls(全量线路) 与 urls_ok(过门槛后剩下的)。
+    mode='strict' 门槛生效; mode='off' 安全阀退回 v17 行为(线路全留)。
+    为什么抽成函数: 这段一旦写错, 要么清单被写成空的, 要么门槛形同虚设 ——
+    都该有单测盯着, 不能只靠"跑一次线上看看"。
+    为什么要有安全阀: speed_rank.json 是唯一数据源, 它缺失/过期/格式错时严格
+    过滤会把 live.txt 清空, 电视上就是"直播全空", 比卡顿难查一百倍。"""
+    if not channels:
+        return [], 'off', '本轮没有候选台', [], 0
+    n_ok = sum(1 for c in channels if c.get('urls_ok'))
+    n_slow = sum(len(c.get('slow') or []) for c in channels)
+    if not speed:
+        valve = 'speed_rank.json 缺失或为空'
+    elif n_ok < LIVE_MIN_CHANNELS:
+        valve = '过门槛后只剩 %d 台(<%d)' % (n_ok, LIVE_MIN_CHANNELS)
+    else:
+        valve = ''
+    if not valve:
+        kept, dead = [], []
+        for c in channels:
+            if not c.get('urls_ok'):
+                fastest = max([speed.get(u['url'], 0)
+                               for u in c['urls']] or [0])
+                dead.append((c['name'], fastest))
+                continue
+            c['urls'] = c['urls_ok']
+            kept.append(c)
+        return kept, 'strict', '', dead, n_slow
+    # 安全阀: 退回 v17 行为, 只保留 v16 那条"整台三条线都实测不过才删台"
+    kept, dead = [], []
+    for c in channels:
+        urls = c['urls']
+        if should_drop_by_speed(urls, speed):
+            dead.append((c['name'], max(speed[u['url']] for u in urls)))
+            continue
+        c['urls_ok'] = urls
+        kept.append(c)
+    return kept, 'off', valve, dead, 0
+
+
+def build_cand_pool(chosen, pool, speed=None):
+    """v18: 组装喂给家里测速的候选池(写进 live_cand.txt)。
+
+    为什么需要它: live.txt 过上 300 门槛后只剩十几个台, 被删掉的四十多个台从此
+    再也不会出现在测速视野里 —— 而 speed_rank.json 只在"家里手动跑一次"时才更新,
+    没有这个文件, 清单只会一路缩到安全阀。所以每轮单独产出候选池:
+      前 LIVE_CAND_GOOD 条 = 已知够用的(复查有没有掉速)
+      后面 = 从没测过的(找新线)
+    已经从家里测过、结果是慢线/死线的不再占名额(测了也是 0, 白耗时间)。"""
+    speed = speed or {}
+    good = []
+    for x in chosen:
+        u = x['url']
+        if u not in good and speed.get(u, 0) >= LIVE_MIN_KBPS:
+            good.append(u)
+    out = good[:LIVE_CAND_GOOD]
+    seen = set(out) | set(speed.keys())
+    room = LIVE_CAND_KEEP - len(out)
+    for x in pool:
+        if room <= 0:
+            break
+        u = x['url']
+        if u in seen or '#' in u or ',' in u:
+            continue
+        seen.add(u)
+        out.append(u)
+        room -= 1
+    return out[:LIVE_CAND_KEEP]
+
+
+def is_cctv(name):
+    """v18: 是不是央视台。只用于给候选名额, 不参与任何过滤。"""
+    return as_str(name).upper().replace(' ', '').startswith(LIVE_CCTV_PREFIX)
+
+
+INNER_HOST_PATS = (':8000', '/live.php?id=', '/live.php?type=') + \
+    IPTV_INNER_PATS + IPTV_INNER_PORTS
+
+
+def looks_inner_host(url):
+    """v18: 这条线是不是"只在校园网/运营商专网里能通"的地址。
+
+    依据是 2026-10-28 家里那轮实测: 173 条线里央视那批绝大多数落在
+    iptv.huuc.edu.cn / ivi.bupt.edu.cn 这类高校 IPTV, 以及 112.27.x / 58.248.x
+    这类省网专网 IP 上, 家里公网一条都连不上(36 条抽样 100% 超时)。
+    这类地址不是"坏", 是"进不去" —— 所以不删, 只在候选排序里降到最末,
+    让公网可达的源先占名额。"""
+    low = as_str(url).lower()
+    if not low:
+        return False
+    try:
+        host = (urllib.parse.urlsplit(low).hostname or '')
+    except Exception:
+        host = ''
+    if host:
+        if host.endswith('.edu.cn') or host.endswith('.edu'):
+            return True
+        if re.match(r'^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)',
+                    host):
+            return True
+    return any(p in low for p in INNER_HOST_PATS)
 
 
 def cn_affinity(url, geo=None, isp=None, speed=None):
@@ -2065,6 +2307,34 @@ def rr_pick(urls_dict, n):
     return out
 
 
+def pick_candidates(urls_dict, n, speed=None):
+    """v18: 选这轮要实测的候选地址。三档优先:
+
+    ① 家里实测过且 >= LIVE_MIN_KBPS 的线 —— **强制留在候选里**, 不参与轮转淘汰
+    ② 公网可达的普通 host —— 仍按上游轮转(rr_pick), 保证每个上游都有份
+    ③ 只在校园网/运营商专网里能通的 host —— 排最后, 名额有剩才给
+
+    为什么要有 ①: 实测线上三次 run 的线路集合, 相隔 3 小时只重叠 95%, 另一组
+    只重叠 53% —— 候选是轮转取的, 今天测出 5000kbps 的那条线明天根本没被探,
+    于是一轮轮损耗光, 清单自己缩没。钉住它, 13 个台才稳得住。
+    为什么要有 ③: 央视候选里大量是教育网/内网 IP, 每台名额会被它们吃满,
+    真正公网可达的央视源反而轮不到实测。"""
+    speed = speed or {}
+    items = list(urls_dict.items())
+    pin = [(u, m) for u, m in items if speed.get(u, 0) >= LIVE_MIN_KBPS]
+    rest = [(u, m) for u, m in items if speed.get(u, 0) < LIVE_MIN_KBPS]
+    pub = {u: m for u, m in rest if not looks_inner_host(u)}
+    inner = {u: m for u, m in rest if looks_inner_host(u)}
+    picked = list(pin)
+    left = max(0, n - len(picked))
+    if left:
+        picked += rr_pick(pub, left)
+    left = max(0, n - len(picked))
+    if left:
+        picked += rr_pick(inner, left)
+    return picked[:n]
+
+
 def pick_live_urls(hd, backup, unver):
     """选定该频道最终线路, 返回 (urls, n_unver)。
     主力 hd(>=720p) 优先; 不足 LIVE_KEEP 用 backup(>=540p) 补齐;
@@ -2201,10 +2471,19 @@ def collect_live(wl):
                 % (len(ad_stats['dropped']), ', '.join(ad_stats['dropped'])))
 
     tasks = []
+    n_pin = 0
     for key, c in cands.items():
-        for u, meta in rr_pick(c['urls'], LIVE_MAX_CAND):
+        # v18: 央视台多给 8 个名额(免费央视源少, 内网源还占坑); 其余台不变
+        lim = LIVE_CCTV_CAND if is_cctv(key) else LIVE_MAX_CAND
+        picked = pick_candidates(c['urls'], lim, speed)
+        n_pin += sum(1 for u, _ in picked
+                     if speed.get(u, 0) >= LIVE_MIN_KBPS)
+        for u, meta in picked:
             tasks.append((key, u, meta.get('ua'), meta.get('raw'),
                           meta.get('ref')))
+    if n_pin:
+        log('[好线钉住] %d 条家里实测够用的线强制留在候选里(不参与轮转淘汰)'
+            % n_pin)
     log('直播候选线路共 %d 条(白名单频道 %d 个), 第一轮浅探(只判活)...' % (
         len(tasks), len(cands)))
     probe_res = {}
@@ -2297,6 +2576,7 @@ def collect_live(wl):
                                        'ref': prev.get('ref')}
 
     channels = []
+    cand_channels = []      # v18: 喂给家里测速的候选池(含被 300 门槛删掉的台)
     preroll_dropped = []    # v14: 因起播广告被清空的台
     speed_dead = []         # v16: 家里实测每条线都不够用 -> 整台剔除(不留空名)
     n_cn_blind = 0          # v15: 靠"大陆盲源"补位的线路总条数
@@ -2369,6 +2649,8 @@ def collect_live(wl):
         # 也不给他一条"一定通但先播 30 秒广告"的线。
         fill = cn_blind[:LIVE_CN_BLIND_KEEP] if len(hd) + len(backup) < LIVE_KEEP else []
         urls, n_unver = pick_live_urls(hd, backup, unver + fill)
+        # v18: 家里实测够用的线必须出现在最终名单里, 且排第一条
+        urls = inject_pinned(urls, hd + backup + unver + fill, speed)
         n_cn_used = sum(1 for x in urls if x.get('method') == 'cn-blind')
         if n_cn_used:
             n_cn_blind += n_cn_used
@@ -2380,21 +2662,40 @@ def collect_live(wl):
             if n_preroll:
                 preroll_dropped.append((key, n_preroll))
             continue
-        # v16: 空名台剔除。用户实看: 点 CCTV-2 结果画面一路跳到 CCTV-5, 中间
-        # 跳过好几个台 —— TVBox 在"这个台所有线路都打不开"时会自动往下跳频道。
-        # 留着这种"有名字没内容"的台比没有它更糟(点进去就跳台, 还以为配置坏了),
-        # 用户一贯的态度也是"宁少勿滥"。所以拿到家里实测数据后, 把**每条线都
-        # 实测过且都不够用**的台整台去掉。
-        # 注意: 只有"全部线路都测过"才敢删 —— 有没测过的线就不动, 绝不误杀。
-        if should_drop_by_speed(urls, speed):
-            speed_dead.append((key, max(speed[x['url']] for x in urls)))
-            continue
+        # v18: 候选池 —— 每台最多 LIVE_CAND_KEEP 条, 先已知够用的、再没测过的。
+        # 被门槛删掉的台也照样进池(否则它们的线永远没机会被测到, 清单只会缩)。
+        cand_pool = build_cand_pool(urls, hd + backup + unver + fill, speed)
+        if cand_pool:
+            cand_channels.append({'name': key,
+                                  'group': c['entry']['group'],
+                                  'urls': cand_pool})
+        # v18: 300 硬门槛 —— 这里只算结果, 是否真的生效在循环外统一裁决
+        # (要等所有台算完才知道"过滤后还剩几个台", 安全阀需要这个数)
+        keep, slow = filter_urls_by_speed(urls, speed)
         channels.append({'name': key, 'group': c['entry']['group'],
                          'epg': c['entry'].get('epg'),
-                         'urls': urls,
+                         'urls': urls, 'urls_ok': keep, 'slow': slow,
                          'n_cand': len(c['urls']),
                          'n_hd': len(hd), 'n_backup': len(backup),
                          'n_unver': n_unver, 'n_cn': n_cn_used})
+
+    # ---- v18: 300 硬门槛裁决 + 安全阀 ----
+    channels, sp_mode, valve, dead, n_slow = apply_speed_gate(channels, speed)
+    speed_dead += dead
+    if sp_mode == 'strict':
+        log('[速度门槛] %dkbps 硬门槛生效: 存活 %d 台 / %d 条线, '
+            '删掉 %d 条不够用的线(含未实测)'
+            % (LIVE_MIN_KBPS, len(channels),
+               sum(len(c['urls']) for c in channels), n_slow))
+    else:
+        log('[速度门槛] 本轮**未启用**(%s) —— 退回 v17 行为, '
+            '清单里可能仍有卡台, 请尽快在家里跑一次 tools/speedtest_live.py'
+            % valve)
+        ad_stats['speed_valve'] = valve
+    ad_stats['speed_mode'] = sp_mode
+    ad_stats['n_slow'] = n_slow
+    ad_stats['speed'] = speed
+
 
     order = {g: i for i, g in enumerate(LIVE_GROUPS)}
     channels.sort(key=lambda c: (order.get(c['group'], 9), c['name']))
@@ -2419,13 +2720,14 @@ def collect_live(wl):
             % (len(preroll_dropped),
                ', '.join('%s(%d条)' % (k, n) for k, n in preroll_dropped)))
     if speed_dead:
-        log('[空名台剔除] 家里实测每条线都不够用(< %dkbps), 整台去掉 %d 个: %s'
-            % (LIVE_SPEED_OK, len(speed_dead),
+        log('[直播删台] 家里实测没有一条线达到 %dkbps, 整台去掉 %d 个: %s'
+            % (LIVE_MIN_KBPS, len(speed_dead),
                ', '.join('%s(最快%.0f)' % (k, v)
                          for k, v in sorted(speed_dead, key=lambda x: x[1])[:8])))
     ad_stats['preroll'] = preroll_flags
     ad_stats['preroll_dropped'] = preroll_dropped
     ad_stats['speed_dead'] = speed_dead
+    ad_stats['cand_channels'] = cand_channels
     ad_stats['cn_blind'] = n_cn_blind
     ad_stats['cn_blind_chans'] = cn_blind_chans
     ad_stats['saved_cn'] = saved_cn
@@ -2454,14 +2756,16 @@ def write_ads_pool(con, one):
         len(con), len(one), '已启用' if ADS_ENABLE else '仅采集未启用'))
 
 
-def write_live(channels):
+def write_live(channels, cand_channels=None):
     """生成 live.txt(TVBox txt 多线路) / live.json(OSC) / live.m3u; 返回 lives 结构
     v7: 去掉从未使用过的 repo 参数(签名骗人比缺参数更糟)
     v12: 主力源改为 live.txt —— 用户在影视仓 V5.0.31 实测:
          · live.m3u 每台3条 -> 频道列表里一台显示成3个同名台(146条/52台)
          · live.json(OSC)   -> 影视仓直接不认, 加载失败
          · txt 的 "台名,url1#url2#url3" 是唯一同时满足"一台一次"+"可切线路"
-           且各分支都支持的写法, 故作为主推; m3u/json 保留给别的播放器用"""
+           且各分支都支持的写法, 故作为主推; m3u/json 保留给别的播放器用
+    v18: 新增 live_cand.txt(候选池) —— 只给家里测速脚本用, 电视端不用填。
+         传 None 就不写这个文件(单测/老调用方行为不变)。"""
     lives = []
     for g in LIVE_GROUPS:
         chans = [c for c in channels if c['group'] == g]
@@ -2506,6 +2810,31 @@ def write_live(channels):
                 lines.append(u['url'])
     with open(LIVE_M3U, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines) + '\n')
+
+    # ---- v18: live_cand.txt (候选池, 只给家里测速用) ----
+    # 格式与 live.txt 完全一致(同一套解析器能吃), 但里面是"该测哪些线"而不是
+    # "电视该播哪些台" —— 所以它包含那些被 300 门槛删掉的台。
+    # 为什么必须单独出一份: speed_rank.json 只在用户手动跑测速时才更新, 而 live.txt
+    # 过了门槛只剩十几个台; 没有这个文件, 那四十多个台的线永远进不了测速视野。
+    if cand_channels is not None:
+        ct = []
+        for g in LIVE_GROUPS:
+            chans = [x for x in cand_channels if x['group'] == g]
+            if not chans:
+                continue
+            if ct:
+                ct.append('')
+            ct.append('%s,#genre#' % g)
+            for c in chans:
+                us = [u for u in c['urls'] if '#' not in u and ',' not in u]
+                if us:
+                    ct.append('%s,%s' % (c['name'].replace(',', ' '),
+                                         '#'.join(us)))
+        with open(LIVE_CAND_TXT, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(ct) + '\n')
+        log('live_cand.txt: %d 个频道的待测候选(每台最多 %d 条, 供家里测速; '
+            '电视端不用填这个地址)' % (len(cand_channels), LIVE_CAND_KEEP))
+
     log('live.txt: %d 个频道, 共 %d 条线路(每台一台多条); '
         'live.m3u: 每台 %d 条' % (
             len(channels), sum(len(c['urls']) for c in channels),
@@ -3168,6 +3497,50 @@ def write_report(items, alive, suspect, deadlist, scored, channels,
             n_unver_ch - n_all_unver)
     lines.append('直播频道 %d 个 / 线路 %d 条%s' % (
         len(channels), sum(len(c['urls']) for c in channels), tail))
+
+    # ---- v18: 直播速度门槛(整轮最关键的一节, 单独一块写清楚) ----
+    sp_mode = (ad_stats or {}).get('speed_mode')
+    if sp_mode:
+        spd = (ad_stats or {}).get('speed') or {}
+        dead = (ad_stats or {}).get('speed_dead') or []
+        lines += ['', '### 直播速度门槛 (%dkbps)' % LIVE_MIN_KBPS, '']
+        if sp_mode == 'strict':
+            lines.append(
+                '- **已启用**: 只收家里实测 >=%dkbps 的线路; 本轮删掉 %d 条'
+                '不够用的线(含从没测过的), 清单剩 %d 台 / %d 条线'
+                % (LIVE_MIN_KBPS, (ad_stats or {}).get('n_slow', 0),
+                   len(channels),
+                   sum(len(c['urls']) for c in channels)))
+            if channels:
+                lines += ['', '| 频道 | 第一条实测 | 线路数 |', '|---|---|---|']
+                for c in channels:
+                    k = spd.get(c['urls'][0]['url'])
+                    lines.append('| %s | %s | %d |' % (
+                        c['name'], ('%.0f kbps' % k) if k else '未实测',
+                        len(c['urls'])))
+        else:
+            lines.append('- **本轮未启用（安全阀）**: %s'
+                         % (ad_stats or {}).get('speed_valve', ''))
+            lines.append('- 原因: 300 门槛要靠 speed_rank.json 里的实测数据说话, '
+                         '数据不足时强行过滤会把清单写成空的。本轮退回 v17 行为'
+                         '(线路全留, 只按实测排), 所以清单里可能仍有卡台。')
+            lines.append('- 处理: 在家里跑一次 `python tools/speedtest_live.py`, '
+                         '把生成的 speed_rank.json 传到仓库根目录, 下一轮生效。')
+        if dead:
+            _d = sorted(dead, key=lambda x: -x[1])
+            _show = _d[:24]
+            lines.append('')
+            lines.append('**被删掉的台 (%d)**: ' % len(dead) + '、'.join(
+                '%s(%s)' % (k, ('%.0fkbps' % v) if v else '0kbps')
+                for k, v in _show)
+                + ('……等 %d 个(完整清单见 live_cand.txt 的频道名)'
+                   % len(_d) if len(_d) > len(_show) else ''))
+            lines.append('')
+            lines.append('> 这些台不是配置坏了, 是在你家这条宽带上它们的线路'
+                         '实测出不了流(教育网/运营商专网的 IP 居多)。想补回来'
+                         '只能等下次测速出现这些台 >=%dkbps 的新线路。'
+                         % LIVE_MIN_KBPS)
+
     # v2: 直播上游健康表(上游挂了看得见, 手动补新上游有依据)
     lines += ['', '### 直播上游健康表', '',
                '| 状态 | 上游 | 命中白名单 | 总条数 | 备注 |',
@@ -3397,7 +3770,7 @@ def main():
                      up_stats, now, trip=why, ad_stats=ad_stats)
         return
     save_deadlog(dead_apis, dead_stores)
-    lives = write_live(channels)
+    lives = write_live(channels, ad_stats.get('cand_channels'))
 
     # ---- 生成配置 ----
     # v10: 搜索可用的排前面 —— 截断到 MAX_SITES 时, 先被淘汰的是"能浏览但
