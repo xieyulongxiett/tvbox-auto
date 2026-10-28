@@ -1231,6 +1231,127 @@ def test_cn_blind_fill():
 
 # ---------------- 独立运行 ----------------
 
+def test_isp_class():
+    """v16: 运营商识别。用户家是中国移动 —— 移动源要顶到前面, 联通/电信的
+    省网 IPTV 跨网基本连不上要沉底。只判"是不是 CN"分不出这个差别。"""
+    assert cs.isp_class('China Mobile Communications Corporation') == 'CMCC'
+    assert cs.isp_class('AS9808 China Mobile') == 'CMCC'
+    assert cs.isp_class('CHINA MOBILE') == 'CMCC'
+    assert cs.isp_class('China Telecom (Group)') == 'CT'
+    assert cs.isp_class('CHINANET-BACKBONE') == 'CT'
+    assert cs.isp_class('China Unicom IP network') == 'CUCC'
+    assert cs.isp_class('CHINA169-BACKBONE') == 'CUCC'
+    assert cs.isp_class('CERNET') == 'EDU'
+    assert cs.isp_class('Nocix LLC') == ''
+    assert cs.isp_class('') == ''
+    assert cs.isp_class(None) == ''
+
+
+def test_cn_affinity_static():
+    """v16: 国内亲和度打分 —— 决定"每台第一条"是谁, 治卡顿的核心。
+    下面这批 URL 全是线上 live.txt 里真实出现过的。"""
+    geo = {'39.134.115.163': 'CN', '58.248.112.205': 'CN',
+           '107.150.60.122': 'US', '9.9.9.9': '?'}
+    isp = {'39.134.115.163': 'CMCC', '58.248.112.205': 'CUCC',
+           '107.150.60.122': 'Nocix'}
+    A = cs.cn_affinity
+    # ① 单台腾讯云小机的 php 转发(线上有 10 个台拿它当第一条) —— 必须沉底
+    assert A('http://101.35.240.114:88/live.php?id=CCTV1', geo,
+             isp) == cs.AFF_PHP_RELAY
+    # ② 广东联通 IPTV: 用户在湖南、家里移动宽带, 跨省又跨网 -> 排在移动源后
+    assert A('http://58.248.112.205:8006/GD_CUCC/G_CCTV-11.m3u8?Authinfo=x',
+             geo, isp) == cs.AFF_IPTV_OTHER
+    # ③ 中国移动公网源: 用户本网, 给大陆最高档
+    assert A('http://39.134.115.163/live/cctv1.m3u8', geo,
+             isp) == cs.AFF_ISP_MATCH
+    # ④ 国内 CDN(江西广电 GitV / 百视通 / 湖南华声在线)顶到最前
+    for u in ('http://jxcbn.ws-cdn.gitv.tv/hls/CCTV1HD/index.m3u8',
+              'http://bp-resource-dfl.bestv.cn/live/x.m3u8',
+              'https://liveplay-srs.voc.com.cn/hls/tv/134.m3u8'):
+        assert A(u, geo, isp) == cs.AFF_CN_CDN, u
+    # ⑤ 境外 VPS 与 .xyz 廉价域名: 沉底
+    assert A('http://107.150.60.122/live/cctv1.m3u8', geo,
+             isp) == cs.AFF_OVERSEA
+    assert A('https://zby.130519.xyz/PLTV/11/index.m3u8', geo,
+             isp) == cs.AFF_CHEAP_DOMAIN
+    # ⑥ 归属查不出: 不冤枉也不抬高
+    assert A('http://9.9.9.9/live/a.m3u8', geo, isp) == cs.AFF_UNKNOWN
+
+
+def test_cn_affinity_speed_override():
+    """v16: 家里实测速度优先级最高 —— 快的压过任何静态分, 慢的一律沉底,
+    但同为慢线时仍保留相对次序(好歹能挑个没那么烂的)。"""
+    geo, isp = {}, {}
+    A = cs.cn_affinity
+    fast = A('http://1.1.1.1/a.m3u8', geo, isp, speed=3200)
+    cdn = A('http://jxcbn.ws-cdn.gitv.tv/x.m3u8', geo, isp)
+    assert fast > cdn, '实测 3.2Mbps 必须压过静态国内 CDN'
+    assert A('http://2.2.2.2/a.m3u8', geo, isp, speed=120) < cs.AFF_PHP_RELAY
+    assert A('http://2.2.2.2/a.m3u8', geo, isp, speed=0) < cs.AFF_PHP_RELAY
+    assert (A('http://3.3.3.3/a.m3u8', geo, isp, speed=250)
+            > A('http://2.2.2.2/a.m3u8', geo, isp, speed=100))
+
+
+def test_load_speed_rank_never_crashes():
+    """v16: 没测过速度时返回空 dict, 不能把主流程带崩。"""
+    got = cs.load_speed_rank()
+    assert isinstance(got, dict)
+    assert all(isinstance(v, float) for v in got.values())
+
+
+def test_first_line_must_be_domestic_fast():
+    """v16 端到端验收: 同一个台的 5 条候选, 排序后第一条必须是国内最快的。
+    电视默认播第一条, 而**卡顿不会触发自动换线** —— 第一条慢, 后面再快也白搭。
+    注意境外机器测出的 ms 恰好是反的: 美国 VPS 180ms 最快, 国内源 700~900ms。"""
+    def stab_key(x):
+        ms_tier = 0 if x['ms'] < 1500 else (1 if x['ms'] < 3000 else 2)
+        return (-x.get('aff', 0), ms_tier, -(x['w'] * x['h']),
+                -(x.get('kbps') or 0), x['ms'])
+    geo = {'39.134.115.163': 'CN', '58.248.112.205': 'CN',
+           '107.150.60.122': 'US'}
+    isp = {'39.134.115.163': 'CMCC', '58.248.112.205': 'CUCC'}
+    ent = []
+    for u, ms in (('http://107.150.60.122/live/cctv1hd.m3u8', 180),
+                  ('http://101.35.240.114:88/live.php?id=CCTV1', 300),
+                  ('http://58.248.112.205:8006/GD_CUCC/G_CCTV-1.m3u8'
+                   '?Authinfo=x', 900),
+                  ('http://39.134.115.163/live/cctv1.m3u8', 800),
+                  ('http://jxcbn.ws-cdn.gitv.tv/hls/CCTV1HD/index.m3u8', 700)):
+        ent.append({'url': u, 'w': 1920, 'h': 1080, 'method': 'ffmpeg',
+                    'ms': ms, 'kbps': 3000,
+                    'aff': cs.cn_affinity(u, geo, isp)})
+    ent.sort(key=stab_key)
+    assert 'gitv.tv' in ent[0]['url'], ent[0]['url']
+    assert '39.134.115.163' in ent[1]['url'], ent[1]['url']
+    # 沉底的两条: 境外 VPS(-4) 与 php 转发(-5)。php 更差 —— 一台小机扛 10 个台
+    tail = [e['url'] for e in ent[-2:]]
+    assert any('107.150.60.122' in u for u in tail), tail
+    assert any('101.35.240.114' in u for u in tail), tail
+    # 反向确认: 境外机器眼里最快的 180ms 那条, 绝不能出现在第一条
+    assert ent[0]['ms'] == 700 and 'gitv.tv' in ent[0]['url']
+
+
+def test_should_drop_by_speed():
+    """v16: 空名台剔除。点 CCTV-2 跳到 CCTV-5 就是因为台打不开 —— 留个空名
+    让用户点进去跳台, 比没有这个台更糟。但判定必须保守, 不能误杀好台。"""
+    D = cs.should_drop_by_speed
+    U = lambda *xs: [{'url': x} for x in xs]
+    # ① 三条都测过、都不够用 -> 删
+    assert D(U('a', 'b', 'c'), {'a': 0, 'b': 120, 'c': 250}) is True
+    # ② 有一条能看 -> 不删
+    assert D(U('a', 'b', 'c'), {'a': 0, 'b': 120, 'c': 900}) is False
+    # ③ 有一条**没测过** -> 绝不删(数据不全, 不能下结论)
+    assert D(U('a', 'b', 'c'), {'a': 0, 'b': 120}) is False
+    # ④ 没测过速度(空表) -> 全部保留
+    assert D(U('a', 'b'), {}) is False
+    assert D(U('a', 'b'), None) is False
+    # ⑤ 刚好卡在阈值上: LIVE_SPEED_OK 是"够用"的下限, 等于它不删
+    assert D(U('a'), {'a': cs.LIVE_SPEED_OK}) is False
+    assert D(U('a'), {'a': cs.LIVE_SPEED_OK - 1}) is True
+    # ⑥ 空线路
+    assert D([], {'a': 0}) is False
+
+
 def _run_all():
     fns = [(n, f) for n, f in sorted(globals().items())
            if n.startswith('test_') and callable(f)]

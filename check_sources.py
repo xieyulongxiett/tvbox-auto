@@ -466,6 +466,51 @@ LIVE_GEO_TRUST = ('CN', 'DOMAIN')   # 大陆 IP 与域名型: 可免实测入清
 LIVE_GEO_TTL_DAYS = 30              # 归属缓存有效期(天), 过期重查
 LIVE_GEO_MAX = 140                  # 单轮最多查多少个 host, 超出的沿用缓存/判未知
 LIVE_CN_BLIND_KEEP = 3              # 每台最多补几条"境外测不出"的大陆源
+
+# ---- v16: 国内亲和度排序(治"每个台都卡") ----
+# 起因: 2026-10-28 用户平板实看 —— 点播 3 个仓全好, 直播 58 台基本无广告,
+#   但"基本打开每个台都很卡"。把线上 live.txt 拆开统计后看清了:
+#     185 条线路里, 国内 .cn 域名只有 8 条(4%); 裸 IP 70 条,
+#     .xyz/.fun/.icu/.top/.cc 廉价域名 49 条。
+#   而决定体验的是 **每台的第一条**(电视默认播第一条), 它的构成:
+#     10 条 101.35.240.114:88/live.php?id=   单台腾讯云小机的 PHP 转发
+#      5 条 58.248.112.205:8006/GD_CUCC    广东联通 IPTV(用户在湖南、移动宽带)
+#      8 条 zby.130519.xyz / t.061899.xyz   境外小面板
+#      7 条 freetv.fun / vpstv.net / 173.208.x / 198.204.x   美国 VPS
+#      8 条 国内 CDN(gitv.tv / bestv.cn / voc.com.cn ...)
+#   —— 58 台里只有 8 台的第一条是"国内访问会快"的源。
+# 根因: 排序键 stab_key 用的是 **境外 runner** 测出的延迟与画质。那台机器连
+#   美国 VPS 很快、连广东联通 IPTV 连不上, 而用户网络恰好完全相反 —— 排序的
+#   参照系选错了, 于是"排在最前的恰好是用户在国内访问最慢的那批"。
+# 修法: 不删源(删是广告治理的事, 已经够狠了), 只 **重排** —— 给每条 URL 打
+#   "国内亲和分", 让"国内能跑满带宽"的源排到第一条。检测机测不出速度就用
+#   静态特征兜底; 家里实测的速度可以回流(见 SPEED_RANK_FILE)。
+LIVE_ISP_HINT = 'CMCC'    # 用户家宽带运营商(2026-10-28 确认: 中国移动)
+AFF_CN_CDN = 6            # 国内正规 CDN 域名(.cn 结尾 / 已知国内大厂 CDN)
+AFF_ISP_MATCH = 4         # 大陆 IP 且运营商与用户一致
+AFF_IPTV_SAME_ISP = 3     # 本运营商的省网 IPTV 内网源(有鉴权, 略低于公网 CDN)
+AFF_DOMAIN_NEUTRAL = 2    # 其他域名(看不出归属, 中性)
+AFF_CN_IP = 1             # 大陆 IP, 其他运营商
+AFF_UNKNOWN = 0           # 归属查不出来
+AFF_IPTV_OTHER = -2       # 省网 IPTV 内网源, 非本运营商(跨网大概率连不上)
+AFF_CHEAP_DOMAIN = -3     # .xyz/.fun/.icu/.top/.cc 廉价域名
+AFF_OVERSEA = -4          # 境外 IP / 境外域名
+AFF_PHP_RELAY = -5        # 单台小机的 php 转发脚本(?id= 拼参数, 带宽就几 Mbps)
+# 国内正规 CDN 域名特征(含不是 .cn 后缀的国内大厂 CDN)
+CN_CDN_HINTS = ('gitv.tv', 'bestv.cn', 'wasu.tv', 'cztv.com', 'cntv.cn',
+                'kwimgs.com', 'myqcloud.com', 'aliyuncdn.com', 'alicdn.com',
+                'qiniudn.com', 'clouddn.com', '163.com', 'pili-live',
+                'tencent-cloud.net', 'hunantv.com', 'mgtv.com')
+CN_TLDS = ('.cn', '.com.cn', '.net.cn', '.org.cn', '.gov.cn', '.edu.cn')
+CHEAP_TLDS = ('.xyz', '.fun', '.icu', '.top', '.cc', '.org', '.pw', '.tk',
+              '.ml', '.ga', '.cf', '.gq', '.buzz', '.rest', '.monster')
+# 省网 IPTV 内网源特征: 带鉴权参数 / PLTV 路径 / 固定高端口, 跨网基本连不上
+IPTV_INNER_PATS = ('/pltv/', 'authinfo=', 'gd_cucc', 'gdctc', 'g_ctc',
+                   'stbauth', 'userlivemode', 'zteiptv', 'hwctc')
+IPTV_INNER_PORTS = (':8006', ':8022')
+# 本地实测速度回流: 家里跑 tools/speedtest_live.py 生成后提交, 下一轮生效
+SPEED_RANK_FILE = 'speed_rank.json'
+LIVE_SPEED_OK = 300       # kbps。720p 直播流畅需要 ~1.5Mbps, 低于此值必卡
 LIVE_START_CHECK = 4    # 每台做"起播快照"的候选数(浅探后按快/高清排序取前N)
 LIVE_START_GAP = 6      # 两次快照间隔(秒); 全局只等这一轮, 不是每条各等一次
 # 静态贴片判据: 相对倍数为主, 绝对秒数只做下限(防 1~2 秒切片被倍数判据误伤)
@@ -1587,18 +1632,44 @@ def save_geo_cache(cache):
         log('[归属缓存] 写入失败(不影响本轮): %s' % e)
 
 
-def geo_lookup(host):
-    """查一个 IP 的归属国代码。失败依次降级两个接口, 都失败返回 '?'。
-    只查裸 IP; 域名直接返回 'DOMAIN'(域名型另有判据, 不靠归属)。"""
+def isp_class(org):
+    """v16: 把 ipwho.is / ipinfo.io 返回的 org / isp 字符串归成运营商代号。
+    只认大陆三家与教育网; 认不出返回 ''。
+
+    为什么要多这一层: 用户家宽带是**中国移动**, 而清单里排第一的
+    58.248.112.205:8006 是**广东联通** IPTV —— 跨省又跨运营商, 移动宽带访问
+    基本连不上。同样是"大陆 IP", 对用户来说一个快一个废, 只判 CN 分不出来。"""
+    s = (org or '').lower()
+    if not s:
+        return ''
+    if 'cmcc' in s or 'chinamobile' in s or '中国移动' in s \
+            or ('mobile' in s and 'china' in s):
+        return 'CMCC'
+    if 'telecom' in s or 'chinanet' in s or 'chinatelecom' in s \
+            or '中国电信' in s:
+        return 'CT'
+    if 'unicom' in s or 'china169' in s or 'cucc' in s or '中国联通' in s:
+        return 'CUCC'
+    if 'cernet' in s or 'education' in s:
+        return 'EDU'
+    return ''
+
+
+def _geo_fetch(host):
+    """查一个 IP 的 (国家码, 运营商代号)。失败依次降级两个接口。
+    只查裸 IP; 域名返回 ('DOMAIN', '')。两个接口都失败返回 ('?', '')。"""
     if not is_bare_ip(host):
-        return 'DOMAIN'
+        return ('DOMAIN', '')
     try:
         code, data = http_get('https://ipwho.is/%s' % host, 10)
         j = json.loads(data.decode('utf-8', 'ignore'))
         if isinstance(j, dict) and j.get('success') is not False:
             cc = as_str(j.get('country_code'))
             if cc:
-                return cc
+                conn = j.get('connection')
+                org = (conn.get('isp') or conn.get('org')) \
+                    if isinstance(conn, dict) else j.get('isp')
+                return (cc, isp_class(org))
     except Exception:
         pass
     try:
@@ -1607,10 +1678,27 @@ def geo_lookup(host):
         if isinstance(j, dict):
             cc = as_str(j.get('country'))
             if cc:
-                return cc
+                return (cc, isp_class(j.get('org')))
     except Exception:
         pass
-    return '?'
+    return ('?', '')
+
+
+def geo_lookup(host):
+    """查一个 IP 的归属国代码(兼容旧调用与旧测试)。
+    只查裸 IP; 域名直接返回 'DOMAIN'(域名型另有判据, 不靠归属)。"""
+    return _geo_fetch(host)[0]
+
+
+def load_isp_map():
+    """v16: 从归属缓存读出 {host: 运营商代号}。
+    annotate_geo() 查完就把 isp 落进 ip_geo.json, 紧跟其后调用即可;
+    老缓存没有 isp 字段时返回空 dict, 亲和度自动降级为"只按国家排"。"""
+    out = {}
+    for h, rec in load_geo_cache().items():
+        if isinstance(rec, dict) and rec.get('isp'):
+            out[h] = rec['isp']
+    return out
 
 
 def annotate_geo(hosts):
@@ -1631,8 +1719,13 @@ def annotate_geo(hosts):
         rec = cache.get(h)
         if isinstance(rec, dict) and rec.get('cc') and rec.get('cc') != '?':
             if now - int(rec.get('ts') or 0) < ttl:
-                out[h] = rec['cc']
-                continue
+                # v16: 老缓存(v15 写的)只有 cc 没有 isp。而大陆 IP 的运营商正是
+                # 排序的关键依据 —— 用户家是移动, 联通/电信的省网 IPTV 跨网
+                # 基本连不上, 只知道"是大陆"分不出这个差别。所以大陆 IP 缺 isp
+                # 时补查一次(非大陆的不补, 省请求)。
+                if rec.get('cc') != 'CN' or rec.get('isp'):
+                    out[h] = rec['cc']
+                    continue
         todo.append(h)
     todo.sort()
     if len(todo) > LIVE_GEO_MAX:
@@ -1642,18 +1735,33 @@ def annotate_geo(hosts):
     if todo:
         log('[归属] 查询 %d 个新 host 的归属地...' % len(todo))
         with ThreadPoolExecutor(min(8, MAX_WORKERS)) as ex:
-            futs = {ex.submit(geo_lookup, h): h for h in todo}
+            futs = {ex.submit(_geo_fetch, h): h for h in todo}
             for fu in as_completed(futs):
                 h = futs[fu]
                 try:
-                    cc = fu.result()
+                    cc, isp = fu.result()
                 except Exception:
-                    cc = '?'
+                    cc, isp = '?', ''
+                # v16: 重查失败时**沿用缓存里的旧国家码**, 绝不能因为一次接口
+                # 抖动就把大陆源判成境外 —— 那会直接触发广告站剔除, 干净源被杀。
+                if cc in ('?', '', None):
+                    old = cache.get(h)
+                    if isinstance(old, dict) and old.get('cc') not in (None,
+                                                                       '?', ''):
+                        cc = old['cc']
                 out[h] = cc
                 if cc and cc != '?':
-                    cache[h] = {'cc': cc, 'ts': now}
+                    cache[h] = {'cc': cc, 'isp': isp, 'ts': now}
                 time.sleep(0.05)
         save_geo_cache(cache)
+    isp = load_isp_map()
+    n_isp = sum(1 for h in out if isp.get(h))
+    if n_isp:
+        log('[归属] 其中 %d 个识别到运营商(移动%d/电信%d/联通%d)'
+            % (n_isp,
+               sum(1 for h in out if isp.get(h) == 'CMCC'),
+               sum(1 for h in out if isp.get(h) == 'CT'),
+               sum(1 for h in out if isp.get(h) == 'CUCC')))
     n_cn = sum(1 for c in out.values() if c == 'CN')
     n_unk = sum(1 for c in out.values() if c == '?')
     log('[归属] 大陆 %d / 域名 %d / 境外 %d / 未知 %d'
@@ -1696,6 +1804,87 @@ def pick_ad_hosts(host_map, geo=None, min_ch=None):
             continue          # 大陆运营商源: 扛多是常态, 不是广告站
         out.add(h)
     return out
+
+
+def load_speed_rank():
+    """v16: 读家里实测的速度表 {url: kbps}(由 tools/speedtest_live.py 生成)。
+    文件不存在返回空 dict —— 没测过就纯按静态特征排, 不影响主流程。"""
+    try:
+        with open(os.path.join(HERE, SPEED_RANK_FILE), encoding='utf-8') as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            return {k: float(v) for k, v in d.items()
+                    if isinstance(v, (int, float))}
+    except Exception:
+        pass
+    return {}
+
+
+def should_drop_by_speed(urls, speed):
+    """v16: 这个台要不要因为"家里实测播不了"被整台去掉。
+
+    起因: 用户点 CCTV-2, 画面一路跳到 CCTV-5 —— TVBox 在某个台所有线路都
+    打不开时会自动往下跳频道, 看上去像"配置坏了"。留着这种空名台比没有更糟。
+
+    判定口径必须保守: 只有**每条线都实测过、且每条都不够用**才删。
+    只要有哪怕一条没测过(境外能测、家里没测到 / 新出现的线), 一律不删 ——
+    宁可多留一个可能卡的名, 也不能拿不完整的数据把好台删掉。"""
+    if not speed or not urls:
+        return False
+    for x in urls:
+        if x.get('url') not in speed:
+            return False
+    return all(speed[x['url']] < LIVE_SPEED_OK for x in urls)
+
+
+def cn_affinity(url, geo=None, isp=None, speed=None):
+    """v16: 这条线路"用户在国内访问会不会快"的亲和分, 越大越该排第一条。
+
+    为什么需要它: 排序键 stab_key 用的是 **境外 runner** 实测的延迟与画质,
+    而用户在湖南、家里是中国移动 —— 那台机器觉得快的源(美国 VPS、境外小面板)
+    用户这里最慢, 它连不上的源(广东联通 IPTV) 用户这里同样跨网不通。参照系
+    不同, 排序依据就必须换掉。检测机测不出"用户家到源的速度", 所以用静态
+    特征兜底; 家里实测的速度经 SPEED_RANK_FILE 回流, 命中时以实测为准。"""
+    if speed is not None:
+        # 实测说话: 快的一律排在静态分之上, 慢的一律沉底(但仍保持相对次序)
+        if speed < LIVE_SPEED_OK:
+            return -50 + min(int(speed / 10.0), 40)
+        return 100 + min(int(speed / 100.0), 60)
+    geo = geo or {}
+    isp = isp or {}
+    try:
+        host = (urllib.parse.urlsplit(url).hostname or '').lower()
+    except Exception:
+        return AFF_UNKNOWN
+    if not host:
+        return AFF_UNKNOWN
+    low = url.lower()
+    # ① 单台小机的 php 转发脚本: /live.php?id=CCTV1 这种, 一台机器扛几十个台
+    if re.search(r'\.php\?', low) and ('id=' in low or 'type=' in low):
+        return AFF_PHP_RELAY
+    # ② 省网 IPTV 内网源(鉴权参数 / PLTV 路径 / 固定高端口): 跨网基本连不上
+    inner = any(p in low for p in IPTV_INNER_PATS) \
+        or any(p in low for p in IPTV_INNER_PORTS)
+    # ③ 域名型
+    if not is_bare_ip(host):
+        if host.endswith(CN_TLDS) or any(k in host for k in CN_CDN_HINTS):
+            return AFF_CN_CDN
+        if host.endswith(CHEAP_TLDS):
+            return AFF_CHEAP_DOMAIN
+        if inner:
+            return AFF_IPTV_OTHER
+        return AFF_DOMAIN_NEUTRAL
+    # ④ 裸 IP: 只判国家不够, 还要看运营商 —— 见 isp_class() 的说明
+    cc = geo.get(host)
+    if cc == 'CN':
+        if isp.get(host) == LIVE_ISP_HINT:
+            return AFF_IPTV_SAME_ISP if inner else AFF_ISP_MATCH
+        if inner:
+            return AFF_IPTV_OTHER
+        return AFF_CN_IP
+    if cc in ('?', None, ''):
+        return AFF_UNKNOWN        # 归属查不出: 不冤枉也不抬高
+    return AFF_OVERSEA
 
 
 def snapshot_playlist(txt):
@@ -1890,9 +2079,20 @@ def pick_live_urls(hd, backup, unver):
     n_unver = 0
     if len(urls) < LIVE_KEEP and unver:
         need = LIVE_KEEP - len(urls)
-        picked = sorted(unver, key=lambda x: x['ms'])[:need]
+        picked = sorted(unver, key=lambda x: (-x.get('aff', 0),
+                                              x['ms']))[:need]
         urls += picked
         n_unver = len(picked)
+    # v16: 电视默认播第一条, 而**卡顿不会触发自动换线** —— 第一条慢, 后面再快
+    # 用户也感受不到。实测高清层(>=720p)里若全是"国内访问慢"的线(境外 VPS、
+    # php 小机转发), 而队列后面有明确的国内快线(国内 CDN / 本网 IPTV),
+    # 就把它提到第一位: 宁可第一条是 540p 的国内 CDN, 也不要 1080p 的美国 VPS。
+    # 门槛取 AFF_ISP_MATCH 是为了避免"看不出归属的域名"凭空顶掉实测高清线。
+    if len(urls) > 1 and urls[0].get('aff', 0) <= AFF_CHEAP_DOMAIN:
+        for i, x in enumerate(urls):
+            if i and x.get('aff', 0) >= AFF_ISP_MATCH:
+                urls.insert(0, urls.pop(i))
+                break
     return urls, n_unver
 
 
@@ -1961,6 +2161,11 @@ def collect_live(wl):
     # 省网 IPTV 一台扛 20 多个台是标准部署, 美国 Nocix 的 VPS 扛 30 个台
     # 才是卖线路的面板。同一个数字, 两种结论, 唯一的区分依据是机器在哪。
     geo = annotate_geo(set(host_map.keys()))
+    isp = load_isp_map()
+    # v16: 家里实测的速度表(没测过就是空 dict, 纯按静态特征排, 不影响主流程)
+    speed = load_speed_rank()
+    if speed:
+        log('[速度回流] 读到 %d 条家里实测速度, 排序以实测为准' % len(speed))
     ad_hosts = pick_ad_hosts(host_map, geo)
     # 被归属判据"救下来"的大陆高承载源 —— 必须报出来, 否则用户看不出
     # "为什么这轮没把某个扛 20 台的 IP 砍掉"
@@ -2093,6 +2298,7 @@ def collect_live(wl):
 
     channels = []
     preroll_dropped = []    # v14: 因起播广告被清空的台
+    speed_dead = []         # v16: 家里实测每条线都不够用 -> 整台剔除(不留空名)
     n_cn_blind = 0          # v15: 靠"大陆盲源"补位的线路总条数
     cn_blind_chans = []     # v15: 只有靠盲源才出线的台(境外测不出, 需家里验证)
     for key, c in cands.items():
@@ -2113,7 +2319,9 @@ def collect_live(wl):
                 # 有机会出现在电视上。
                 if r.get('cn'):
                     cn_blind.append({'url': u, 'w': 0, 'h': 0,
-                                     'method': 'cn-blind', 'ms': 9999})
+                                     'method': 'cn-blind', 'ms': 9999,
+                                     'aff': cn_affinity(u, geo, isp,
+                                                        speed.get(u))})
                 continue
             # v14: 起播实测判为伪直播/贴片的线一律不收(用户拍板"宁少勿滥")
             if (k2, u) in preroll_flags:
@@ -2124,11 +2332,14 @@ def collect_live(wl):
             if not w:
                 if r.get('hls'):
                     unver.append({'url': u, 'w': 0, 'h': 0,
-                                  'method': 'unverified', 'ms': r['ms']})
+                                  'method': 'unverified', 'ms': r['ms'],
+                                  'aff': cn_affinity(u, geo, isp,
+                                                     speed.get(u))})
                 continue
             kbps = r.get('kbps') or 0
             entry = {'url': u, 'w': w, 'h': h, 'method': method,
-                     'ms': r['ms'], 'kbps': kbps}
+                     'ms': r['ms'], 'kbps': kbps,
+                     'aff': cn_affinity(u, geo, isp, speed.get(u))}
             if w >= LIVE_MIN_W and h >= LIVE_MIN_H:
                 # v9: 分辨率够但码率虚低 -> 降到备用层, 不让假高清占主位
                 if kbps and kbps / (w * h / 1000.0) < LIVE_MIN_BPP:
@@ -2142,10 +2353,16 @@ def collect_live(wl):
         # 旧版"分辨率优先"会把高画质但高延迟的烂线排第一, 导致 CCTV-1 老卡
         def stab_key(x):
             ms_tier = 0 if x['ms'] < 1500 else (1 if x['ms'] < 3000 else 2)
-            return (ms_tier, -(x['w'] * x['h']), -(x.get('kbps') or 0),
+            # v16: 亲和度升为第一排序键。境外机器测出的延迟只在**同一亲和档**
+            # 内部比较 —— 它对美国 VPS 测出的 200ms, 不代表用户家里也快。
+            return (-x.get('aff', 0), ms_tier, -(x['w'] * x['h']),
+                    -(x.get('kbps') or 0),
                     0 if x['method'] == 'ffmpeg' else 1, x['ms'])
         hd.sort(key=stab_key)
         backup.sort(key=stab_key)
+        # v16: 补位线同样按亲和度排。33 个"境外测不出、只能靠盲源出线"的台,
+        # 顺序随便抓等于把"能不能看"交给运气 —— 必须把移动源/国内 CDN 顶前面。
+        cn_blind.sort(key=lambda x: -x.get('aff', 0))
         # v8: 兜底判定抽到 pick_live_urls(), 便于单测
         # v15: 实测线不足 LIVE_KEEP 时, 用大陆盲源补位(最多 LIVE_CN_BLIND_KEEP)。
         # 为什么允许补: 宁可给用户一条"可能不通但一定没广告"的线(不通就切下一条),
@@ -2163,6 +2380,15 @@ def collect_live(wl):
             if n_preroll:
                 preroll_dropped.append((key, n_preroll))
             continue
+        # v16: 空名台剔除。用户实看: 点 CCTV-2 结果画面一路跳到 CCTV-5, 中间
+        # 跳过好几个台 —— TVBox 在"这个台所有线路都打不开"时会自动往下跳频道。
+        # 留着这种"有名字没内容"的台比没有它更糟(点进去就跳台, 还以为配置坏了),
+        # 用户一贯的态度也是"宁少勿滥"。所以拿到家里实测数据后, 把**每条线都
+        # 实测过且都不够用**的台整台去掉。
+        # 注意: 只有"全部线路都测过"才敢删 —— 有没测过的线就不动, 绝不误杀。
+        if should_drop_by_speed(urls, speed):
+            speed_dead.append((key, max(speed[x['url']] for x in urls)))
+            continue
         channels.append({'name': key, 'group': c['entry']['group'],
                          'epg': c['entry'].get('epg'),
                          'urls': urls,
@@ -2172,12 +2398,34 @@ def collect_live(wl):
 
     order = {g: i for i, g in enumerate(LIVE_GROUPS)}
     channels.sort(key=lambda c: (order.get(c['group'], 9), c['name']))
+    # v16: 报"每台第一条"的构成。这是判断还卡不卡的**唯一观测量** —— 电视默认
+    # 播第一条, 第一条慢, 后面两条再快用户也感受不到(卡顿不会触发自动换线)。
+    if channels:
+        _c = {}
+        for ch in channels:
+            a = (ch['urls'][0] or {}).get('aff', 0)
+            k = ('家里实测' if a >= 100 else
+                 '国内CDN' if a >= AFF_CN_CDN else
+                 '本网IPTV' if a >= AFF_IPTV_SAME_ISP else
+                 '大陆IP' if a >= AFF_CN_IP else
+                 '中性/未知' if a >= AFF_UNKNOWN else
+                 '境外或慢源')
+            _c[k] = _c.get(k, 0) + 1
+        log('[第一条构成] ' + ' / '.join(
+            '%s %d' % (k, v) for k, v in sorted(_c.items(),
+                                                key=lambda x: -x[1])))
     if preroll_dropped:
         log('[直播起播广告] 因起播实测被清空的台 %d 个: %s'
             % (len(preroll_dropped),
                ', '.join('%s(%d条)' % (k, n) for k, n in preroll_dropped)))
+    if speed_dead:
+        log('[空名台剔除] 家里实测每条线都不够用(< %dkbps), 整台去掉 %d 个: %s'
+            % (LIVE_SPEED_OK, len(speed_dead),
+               ', '.join('%s(最快%.0f)' % (k, v)
+                         for k, v in sorted(speed_dead, key=lambda x: x[1])[:8])))
     ad_stats['preroll'] = preroll_flags
     ad_stats['preroll_dropped'] = preroll_dropped
+    ad_stats['speed_dead'] = speed_dead
     ad_stats['cn_blind'] = n_cn_blind
     ad_stats['cn_blind_chans'] = cn_blind_chans
     ad_stats['saved_cn'] = saved_cn
