@@ -45,23 +45,63 @@ jobs:
       # 放弃了也继续跑(脚本有降级分支: 没有 ffprobe 时只探活不测画质)。
       # 关键改动是**去掉了 apt-get update** —— 它是那 34 分钟的真正原因
       # (拉索引时镜像抽风), 而 runner 的包索引本来就是现成的。
+      # v13: 静态包优先(2026-10-27 实证: ubuntu-latest 镜像里没有 ffprobe,
+      # apt 装 240 秒装不上还白耗 4 分钟 —— 那一轮 report 里 133 条线路
+      # 100% "未实测", 画质和存活一条都没验过)。改成从 GitHub Release 取
+      # BtbN 的静态构建(约144MB), runner 在 GitHub 内网, 几秒就能下完;
+      # 静态包失败才退回 apt(限时 120 秒), 两条路都不通就降级跑, 照样出配置。
       - name: Ensure ffmpeg
         run: |
           if command -v ffprobe >/dev/null 2>&1; then
             echo "ffprobe 已在镜像里: $(ffprobe -version 2>&1 | head -1)"
             exit 0
           fi
-          echo "::warning::runner 上没有 ffprobe, 尝试 apt 安装(限时 240 秒)"
-          timeout 240 sudo apt-get install -y -qq \
+          echo "::warning::runner 上没有 ffprobe, 取静态包(约144MB)"
+          URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-linux64-gpl-9.0.tar.xz"
+          if curl -fsSL --retry 1 --max-time 180 -o /tmp/ff.tar.xz "$URL" \
+             && mkdir -p /tmp/ffx \
+             && tar -xJf /tmp/ff.tar.xz -C /tmp/ffx; then
+            # 不写死包内路径: BtbN 每个版本顶层目录名都带版本号, 用 find 找更抗改名
+            P=$(find /tmp/ffx -type f -name ffprobe | head -1)
+            F=$(find /tmp/ffx -type f -name ffmpeg | head -1)
+            if [ -n "$P" ] && [ -n "$F" ]; then
+              sudo install -m 0755 "$F" "$P" /usr/local/bin/
+              echo "静态包就绪: $(ffprobe -version 2>&1 | head -1)"
+              exit 0
+            fi
+            echo "::warning::解压后没找到 ffprobe/ffmpeg"
+          else
+            echo "::warning::静态包下载/解压失败 —— 本机实测过该地址只有 26KB/s,"
+            echo "::warning::runner 在 GitHub 内网通常几秒下完; 慢就按失败处理, 别硬等"
+          fi
+          echo "::warning::退回 apt(限时 120 秒)"
+          timeout 120 sudo apt-get install -y -qq \
             -o Acquire::http::Timeout=15 \
             -o Acquire::https::Timeout=15 \
             -o Acquire::Retries=1 \
-            ffmpeg \
-            || echo "::warning::apt 安装失败/超时, 本轮降级为只探活不测画质(不影响出配置)"
-          ffprobe -version 2>&1 | head -1 || echo "确认无 ffprobe, 按降级模式继续"
+            ffmpeg || true
+          if command -v ffprobe >/dev/null 2>&1; then
+            echo "apt 就绪: $(ffprobe -version 2>&1 | head -1)"
+          else
+            echo "::warning::仍无 ffprobe —— 本轮降级为只探活不测画质(不影响出配置)"
+          fi
 
       - name: Install optional fallback
         run: pip install --quiet imageio-ffmpeg || true
+
+      # v13: 探测链自检。上一步"装上了没"和"装上能不能用"是两件事 ——
+      # 加这一步, 日志里直接出现分辨率数字就说明深探是真的, 一片 warning
+      # 就说明这轮又白测。3 秒成本, 换掉一整轮 20 分钟的瞎猜。
+      - name: Probe selftest
+        run: |
+          if ! command -v ffprobe >/dev/null 2>&1; then
+            echo "::warning::无 ffprobe, 跳过自检(本轮按未实测记账)"
+            exit 0
+          fi
+          ffprobe -v error -rw_timeout 8000000 \
+            -select_streams v:0 -show_entries stream=width,height \
+            -of csv=p=0 "https://xykt-fix.github.io/Y77.m3u8" \
+            || echo "::warning::自检取流失败(可能是该线路本身不稳, 不代表脚本失败)"
 
       - name: Run checker
         env:

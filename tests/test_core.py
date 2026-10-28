@@ -457,7 +457,9 @@ def test_write_store_selection():
         # mine_sites 默认 0 -> 不挂"我的影视"(否则电视上是个红点)
         cs.write_store(kept, 'owner/repo', True, [])
         cfg = json.load(open(cs.STORE, encoding='utf-8'))
-        names = [e['sourceName'] for e in cfg['storeHouse']]
+        # v13: urls 格式(GYCK.json 同款), storeHouse 在影视仓上选不开
+        assert 'urls' in cfg and 'storeHouse' not in cfg, list(cfg.keys())
+        names = [e['name'] for e in cfg['urls']]
         assert names[0] == '我的直播', names
         assert '我的影视' not in names, 'tvbox.json 无站点时不该挂(红点废源)'
         # 三个直连仓按 分数 > 站点数 排进去
@@ -472,7 +474,7 @@ def test_write_store_selection():
         assert all('转圈仓F' not in n for n in names), names
         assert sum(1 for n in names if '分' in n) == 3, names
         # 电视端地址必须带代理前缀(裸 raw 在盒子上拉不动)
-        assert cfg['storeHouse'][0]['sourceUrl'].startswith(cs.GH_PROXY)
+        assert cfg['urls'][0]['url'].startswith(cs.GH_PROXY)
     finally:
         cs.STORE = old
         shutil.rmtree(tmp, ignore_errors=True)
@@ -487,7 +489,7 @@ def test_write_store_rejects_gh_heavy():
         bad = [s for s in _scored() if s['name'] == '转圈仓F']
         cs.write_store(bad, 'owner/repo', True, [])
         cfg = json.load(open(cs.STORE, encoding='utf-8'))
-        names = [e['sourceName'] for e in cfg['storeHouse']]
+        names = [e['name'] for e in cfg['urls']]
         # 放宽时也要挂上(空清单等于点播全废), 但名字里带 G99 标记
         assert any('转圈仓F' in n for n in names), names
         assert any('G99' in n for n in names), names
@@ -504,12 +506,12 @@ def test_write_store_mine_only_when_sites():
         cs.STORE = os.path.join(tmp, 'store.json')
         kept = [s for s in _scored() if s['state'] != '剔除']
         cs.write_store(kept, 'owner/repo', True, None, mine_sites=12)
-        names = [e['sourceName'] for e in
-                 json.load(open(cs.STORE, encoding='utf-8'))['storeHouse']]
+        names = [e['name'] for e in
+                 json.load(open(cs.STORE, encoding='utf-8'))['urls']]
         assert '我的影视' in names, names
         cs.write_store(kept, 'owner/repo', True, None, mine_sites=0)
-        names = [e['sourceName'] for e in
-                 json.load(open(cs.STORE, encoding='utf-8'))['storeHouse']]
+        names = [e['name'] for e in
+                 json.load(open(cs.STORE, encoding='utf-8'))['urls']]
         assert '我的影视' not in names, names
     finally:
         cs.STORE = old
@@ -524,10 +526,10 @@ def test_write_store_without_repo():
         cs.STORE = os.path.join(tmp, 'store.json')
         cs.write_store(_scored(), '', False, [('清理版', 'multi/m1.json', 1.0)])
         cfg = json.load(open(cs.STORE, encoding='utf-8'))
-        urls = [e['sourceUrl'] for e in cfg['storeHouse']]
+        urls = [e['url'] for e in cfg['urls']]
         assert all(u.startswith('http') for u in urls), urls
         assert all('//main' not in u for u in urls), urls
-        assert all('我的直播' not in e['sourceName'] for e in cfg['storeHouse'])
+        assert all('我的直播' not in e['name'] for e in cfg['urls'])
     finally:
         cs.STORE = old
         shutil.rmtree(tmp, ignore_errors=True)
@@ -729,7 +731,7 @@ def test_store_prefers_big_store():
         ]
         cs.write_store(scored, '', False, [])
         cfg = json.load(open(cs.STORE, encoding='utf-8'))
-        names = [e['sourceName'] for e in cfg['storeHouse']]
+        names = [e['name'] for e in cfg['urls']]
         assert names[0].startswith('大仓'), names
     finally:
         cs.STORE = old
@@ -922,6 +924,232 @@ def test_write_ads_pool():
     finally:
         cs.ADS_POOL = old
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------- v13: 方案C 直播深探分级 ----------------
+
+def test_live_deep_quota():
+    """v13: 深探配额是正整数, 且要明显小于候选上限 ——
+    等于候选上限就退化成全量深探, 832 条 × 12 秒能把 job 拖死"""
+    assert isinstance(cs.LIVE_DEEP_PER_CH, int) and cs.LIVE_DEEP_PER_CH >= 1
+    assert cs.LIVE_DEEP_PER_CH * 4 <= cs.LIVE_MAX_CAND, \
+        '深探配额 %d 相对候选上限 %d 过大' % (cs.LIVE_DEEP_PER_CH,
+                                            cs.LIVE_MAX_CAND)
+
+
+def test_probe_live_shallow_skips_ffprobe():
+    """v13: 浅探(deep=False)一次 ffprobe 都不许调 ——
+    第一轮全量候选靠它, 漏调一次就会在白名单规模上乘以 12 秒超时"""
+    real_get, real_probe = cs.http_get, cs.ffprobe_res
+    calls = {'n': 0}
+
+    def counter(*a, **k):
+        calls['n'] += 1
+        return (1920, 1080)
+    try:
+        cs.ffprobe_res = counter
+        master = (b'#EXTM3U\n'
+                  b'#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720\n'
+                  b'mid.m3u8\n')
+        cs.http_get = lambda *a, **k: (200, master)
+        r = cs.probe_live('http://x/m.m3u8', deep=False)
+        assert calls['n'] == 0, '浅探不该调 ffprobe, 实际调了 %d 次' % calls['n']
+        assert r['ok'] and r['method'] == 'master', r
+        assert (r['w'], r['h']) == (1280, 720), r
+
+        # 媒体清单: 没有 master 声明, 浅探只能给出"可达但画质未知"
+        media = b'#EXTM3U\n#EXTINF:6.0,\na.ts\n#EXTINF:6.0,\nb.ts\n'
+        cs.http_get = lambda *a, **k: (200, media)
+        r2 = cs.probe_live('http://x/1.m3u8', deep=False)
+        assert r2['ok'] and r2['w'] == 0 and r2.get('hls'), r2
+        # 非 m3u8 文本(php 转发): 浅探也算可达, 但不给画质结论
+        cs.http_get = lambda *a, **k: (200, b'not a playlist')
+        r3 = cs.probe_live('http://x/2.php', deep=False)
+        assert r3['ok'] and r3['w'] == 0, r3
+        assert calls['n'] == 0
+
+        # 对照组: deep=True 必须真去测, 且实测优先于 master 声明
+        cs.http_get = lambda *a, **k: (200, master)
+        r4 = cs.probe_live('http://x/m.m3u8', deep=True)
+        assert calls['n'] == 1, calls
+        assert r4['method'] == 'ffmpeg' and r4['w'] == 1920, r4
+    finally:
+        cs.http_get, cs.ffprobe_res = real_get, real_probe
+
+
+def test_pick_live_urls_fill_unverified():
+    """v13: 实测线不足 LIVE_KEEP 时用未实测线补位 ——
+    方案C 每台只深测前几条, 不补的话所有台都退化成 2 条线。
+    补位只在不够数时发生, 绝不挤掉已实测的线, 且要如实报数"""
+    HD = [{'url': 'h0', 'w': 1920, 'h': 1080, 'ms': 100}]
+    BK = [{'url': 'b0', 'w': 1280, 'h': 576, 'ms': 200}]
+    UV = [{'url': 'u%d' % i, 'w': 0, 'h': 0, 'ms': 300 + i} for i in range(4)]
+
+    urls, n_uv = cs.pick_live_urls(HD, BK, UV)
+    assert [u['url'] for u in urls] == ['h0', 'b0', 'u0'], urls
+    assert n_uv == 1, n_uv            # 只补了 1 条
+
+    # 实测线够数: 一条未实测都不许混进来
+    urls2, n_uv2 = cs.pick_live_urls(HD * 3, BK, UV)
+    assert len(urls2) == cs.LIVE_KEEP and n_uv2 == 0, (urls2, n_uv2)
+
+    # 补位优先取探活最快的, 不够几条就补几条
+    UV2 = [{'url': 'slow', 'w': 0, 'h': 0, 'ms': 9000},
+           {'url': 'fast', 'w': 0, 'h': 0, 'ms': 50}]
+    urls3, n3 = cs.pick_live_urls([], BK[:1], UV2)
+    assert [u['url'] for u in urls3] == ['b0', 'fast', 'slow'], urls3
+    assert n3 == 2, n3
+
+
+# ---------------- v14: 广告治理 ----------------
+
+def _idx(durs):
+    return '#EXTM3U\n' + ''.join(
+        '#EXTINF:%s,\nseg%d.ts\n' % (d, i) for i, d in enumerate(durs))
+
+
+def test_ad_seg_ratio_boundary():
+    """v14 核心回归: 旧判据 '>=15s 且 >2.5x中位数' 在 6 秒切片下退化成
+    '15 > 15' = False, 15 秒广告必然漏判。新判据必须是倍数主导。
+    这组用例就是拿旧代码的真实漏判场景钉死它。"""
+    # 6 秒切片 + 15 秒广告: 旧代码漏判, 新版必须抓到
+    assert cs.live_index_ads(_idx([15, 6, 6, 6, 6])), '6s切片+15s广告必须命中'
+    # 6 秒切片 + 20 秒广告: 两版都该抓到
+    assert cs.live_index_ads(_idx([20, 6, 6, 6, 6]))
+    # 起播贴片 12 秒(旧版 10s 阈值 + 3 倍中位数也漏)
+    assert cs.live_index_ads(_idx([12, 6, 6, 6, 6])), '12s起播贴片必须命中'
+    # 中插 15 秒
+    assert cs.live_index_ads(_idx([6, 6, 15, 6, 6]))
+
+    # 反例: 不许误杀
+    assert not cs.live_index_ads(_idx([6, 6, 6, 6, 6]))        # 均匀 6s
+    assert not cs.live_index_ads(_idx([20, 20, 20]))            # 均匀 20s 慢切片
+    assert not cs.live_index_ads(_idx([4, 4, 4, 4]))            # 均匀 4s
+    # 1~2 秒切片: 倍数判据会命中但绝对下限(12s/9s)必须挡住
+    assert not cs.live_index_ads(_idx([4, 1, 1, 1, 1])), '短切片不许靠倍数误杀'
+    # 单次 DISCONTINUITY 是重连, 不是广告
+    once = '#EXTM3U\n#EXTINF:6,\na.ts\n#EXT-X-DISCONTINUITY\n#EXTINF:6,\nb.ts\n#EXTINF:6,\nc.ts\n'
+    assert not cs.live_index_ads(once)
+    # 两处拼接才是强信号
+    twice = ('#EXTM3U\n#EXTINF:6,\na.ts\n#EXT-X-DISCONTINUITY\n#EXTINF:6,\nb.ts\n'
+             '#EXT-X-DISCONTINUITY\n#EXTINF:6,\nc.ts\n')
+    assert cs.live_index_ads(twice)
+
+
+def test_is_bare_ip():
+    assert cs.is_bare_ip('107.150.60.122')
+    assert cs.is_bare_ip('38.75.136.137')
+    assert not cs.is_bare_ip('ali-m-l.cztv.com')
+    assert not cs.is_bare_ip('www.hebtv.com')
+    assert not cs.is_bare_ip('')
+    assert not cs.is_bare_ip(None)
+
+
+def test_pick_ad_hosts():
+    """v14: 广告分发站判据 —— 裸IP + 扛>=N个不同频道。
+    关键: 域名型 host 扛多台**不许**判(省级 IPTV 平台 / 广电 CDN 就是这样),
+    否则会把正规源整片误杀。"""
+    # 线上真实形态: 一个裸IP扛多个台
+    pairs = []
+    for i in range(10):
+        pairs.append(('CCTV-%d' % i, 'http://107.150.60.122/live/cctv%dhd.m3u8' % i))
+    for i in range(6):
+        pairs.append(('卫视%d' % i, 'http://63.141.230.178:82/gslb/x%d.m3u8' % i))
+    # 一个正规 CDN 域名扛很多台(河北广电) —— 不该被判
+    for i in range(20):
+        pairs.append(('河北%d' % i, 'https://event.pull.hebtv.com/live/l%d.m3u8' % i))
+    # 裸IP只扛2个台(未达阈值) —— 不该被判
+    pairs.append(('单台A', 'http://9.9.9.9/live/a.m3u8'))
+    pairs.append(('单台B', 'http://9.9.9.9/live/b.m3u8'))
+
+    hm = cs.host_channel_map(pairs)
+    assert len(hm['107.150.60.122']) == 10
+    assert len(hm['event.pull.hebtv.com']) == 20
+
+    bad = cs.pick_ad_hosts(hm)
+    assert '107.150.60.122' in bad, '裸IP扛10个台必须判为分发站'
+    assert '63.141.230.178' in bad, '裸IP扛6个台必须判为分发站'
+    assert 'event.pull.hebtv.com' not in bad, '域名扛20台不许误杀'
+    assert '9.9.9.9' not in bad, '裸IP只扛2个台不许判'
+    assert len(bad) == 2, bad
+
+    # 阈值可调(便于测试与将来放宽)
+    assert '9.9.9.9' in cs.pick_ad_hosts(hm, min_ch=2)
+
+
+def test_snapshot_and_preroll():
+    """v14: 起播实测 —— 两次快照比对判真直播。"""
+    live1 = ('#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:100\n#EXT-X-TARGETDURATION:6\n'
+             '#EXTINF:6,\na1.ts\n#EXTINF:6,\na2.ts\n#EXTINF:6,\na3.ts\n')
+    live2 = ('#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:102\n#EXT-X-TARGETDURATION:6\n'
+             '#EXTINF:6,\na3.ts\n#EXTINF:6,\na4.ts\n#EXTINF:6,\na5.ts\n')
+    s1, s2 = cs.snapshot_playlist(live1), cs.snapshot_playlist(live2)
+    assert s1['seq'] == 100 and s2['seq'] == 102
+    assert s1['target'] == 6
+    # 序列前进 = 真直播
+    assert cs.judge_preroll(s1, s2) == (False, '')
+
+    # 序列不动 = 伪直播(广告垫片循环)
+    fake = cs.snapshot_playlist(live1)
+    ok, why = cs.judge_preroll(s1, fake)
+    assert ok and '不前进' in why, (ok, why)
+
+    # ENDLIST = 预置循环, 真直播绝不会有
+    ended = cs.snapshot_playlist(live1 + '#EXT-X-ENDLIST\n')
+    ok2, why2 = cs.judge_preroll(ended, ended)
+    assert ok2 and 'ENDLIST' in why2 or '预置' in why2, (ok2, why2)
+
+    # VOD 类型同理
+    vod = cs.snapshot_playlist(
+        '#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:6,\na.ts\n')
+    assert cs.judge_preroll(vod, vod)[0]
+
+    # master 清单: variant 地址天生不变, 不许拿它判"没前进"
+    m1 = cs.snapshot_playlist(
+        '#EXTM3U\n#EXT-X-STREAM-INF:RESOLUTION=1920x1080\nhd.m3u8\n')
+    m2 = cs.snapshot_playlist(
+        '#EXTM3U\n#EXT-X-STREAM-INF:RESOLUTION=1920x1080\nhd.m3u8\n')
+    assert m1['master'] is True
+    assert cs.judge_preroll(m1, m2) == (False, ''), 'master 不许误判'
+
+    # 没有 MEDIA-SEQUENCE 时: 分片列表完全相同 -> 判伪直播
+    noseq1 = cs.snapshot_playlist('#EXTM3U\n#EXTINF:6,\nx.ts\n#EXTINF:6,\ny.ts\n')
+    noseq2 = cs.snapshot_playlist('#EXTM3U\n#EXTINF:6,\nx.ts\n#EXTINF:6,\ny.ts\n')
+    assert noseq1['seq'] is None
+    assert cs.judge_preroll(noseq1, noseq2)[0]
+
+    # 拉不到(快照为 None)一律放行 —— 不许把"测不出"当"有问题"
+    assert cs.judge_preroll(None, None) == (False, '')
+    assert cs.judge_preroll(s1, None) == (False, '')
+    # 不是 m3u8
+    assert cs.snapshot_playlist('<html>404</html>') is None
+    assert cs.snapshot_playlist('') is None
+
+
+def test_circuit_breaker_v14_ad_purge():
+    """v14: 熔断必须分清"上游抖动"和"主动剔除广告站"。
+    线上真实场景: 上一版出线 52 个台, v14 剔除广告分发站后只剩 21 个。
+    如果拿淘汰后的数去比, 21 < 52*0.5=26 会误判成"上游挂了", 于是拒绝写
+    live 文件 —— 改完等于完全没生效。这是必须钉死的坑。"""
+    # 主动剔除: 候选台数没掉(59 >= 52), 只是出线变少 -> 不许拦
+    ok, why = cs.circuit_broken(8, 52, 8, 21, cand_ch=59)
+    assert not ok, '主动剔除不该熔断, 但报了: %s' % why
+
+    # 上游真的挂了: 候选台数从 52 掉到 10 -> 必须拦
+    ok2, why2 = cs.circuit_broken(8, 52, 8, 10, cand_ch=10)
+    assert ok2 and '候选' in why2, (ok2, why2)
+
+    # 全部被剔干净: 候选正常但出线 0 -> 也要拦(不然会写出空直播)
+    ok3, why3 = cs.circuit_broken(8, 52, 8, 0, cand_ch=59)
+    assert ok3 and '剔除' in why3, (ok3, why3)
+
+    # 接口数腰斩仍然独立生效
+    ok4, why4 = cs.circuit_broken(100, 52, 30, 21, cand_ch=59)
+    assert ok4 and '接口数' in why4, (ok4, why4)
+
+    # 老调用方式(不传 cand_ch)行为不变
+    assert cs.circuit_broken(100, 50, 80, 20)[0] is True
+    assert cs.circuit_broken(100, 50, 70, 40)[0] is False
 
 
 # ---------------- 独立运行 ----------------

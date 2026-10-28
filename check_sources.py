@@ -202,6 +202,68 @@ v12 (2026-10-27): 两件事 —— 直播换 txt, 点播换选源标准
       空清单等于点播全废, 比慢一点更糟;
    ⑧ report.md 仓体检表新增 `GH依赖` / `jar率` 两列, 超标的直接标 ✘转圈
 
+v13 (2026-10-27): 直播深探分级 —— 把"没验证就交出去"这条补上
+  起因: v12 首次上线后核对 report.md, 133 条直播线路 **100% 标"未实测"**。
+  追下去是 runner 上 ffprobe 根本不存在(ubuntu-latest 镜像已不预装),
+  apt 又装不上(240 秒超时被掐), imageio-ffmpeg 只给 ffmpeg 不给 ffprobe。
+  后果不是"画质差一点", 而是**这一轮 52 个台 133 条线, 谁死谁活、是不是
+  720p, 一条都没验过**, 全靠索引里那个地址蒙对 —— 电视上放不出来才知道。
+  ① workflow: Ensure ffmpeg 改为先取 BtbN 静态构建(GitHub Release 144MB,
+     runner 在内网几秒下完, 自带 ffmpeg + ffprobe), 失败才退回 apt(120秒),
+     两条路都不通仍降级出配置; 新增 Probe selftest 一步, 拿一条已知线真测
+     一次分辨率, 日志里出现 "1920,1080" 才算这轮深探是真的;
+  ② 浅探/深探两级(方案C, 用户拍板"只实测每台第一条, 备用线只探活"):
+     候选上限是 52 台 × 16 = 832 条, 每条 ffprobe 最长 12 秒, 全量深探能把
+     job 拖到超时。改成第一轮全量只拉索引判活(零 ffprobe), 第二轮每台只对
+     浅探排最前的 LIVE_DEEP_PER_CH(=2) 条测真画质;
+  ③ pick_live_urls 放开补位: 实测线不足 LIVE_KEEP 时用探活通过的线补满,
+     否则每台会退化成 2 条线; 补位只在不够数时发生, 从不挤掉已实测的线,
+     并把补了几条如实写进 report(标"未实测补位");
+  ④ PROBE_AVAILABLE: 探测工具真不可用时直接跳过深探, 不再空排一轮队;
+  ⑤ 测试 48 → 51 项(深探配额 / 浅探不碰 ffprobe / 未实测补位)
+
+v13 补丁 (2026-10-28): 点播"接口无效"的真凶是多仓格式, 不是源
+  实锤链: 3 个入选仓的配置/jar 从电脑端全部秒开且 MD5 一致(v10 与 v12 的
+  store.json 条目一模一样, v10 时代直接填地址能看) → 同一个仓(挺好分享
+  thdjk.json)在 GYCK.json 的 {"urls":[{"url","name"}]} 格式里电视能选开,
+  在本仓 {"storeHouse":[{"sourceName","sourceUrl"}]} 格式里列表能显示、
+  选中即"接口无效" → 影视仓 V5.0.31 对 storeHouse 只展示不兼容。
+  ⑥ store.json 与 multi/m*.json 产出从 storeHouse 改为 urls 格式
+     (饭太硬/肥猫/GYCK 通用主流写法), 仓的内容与排序逻辑零改动
+
+v14 (2026-10-28): 直播起播广告 —— 不是"删不掉", 是判据看错了地方
+  用户报"很多台要先播广告才是正片", 并判断"这不是解决不了, 是代码没写对"。
+  复核线上 143 条线路后, 这句话被三组数据证实:
+  ① AD_URL_PATS 命中率 **0/143** —— 规则写的是 livekey= / bfgd / txiptv
+     这类参数特征, 实际线路是裸 IP + /live/cctv1hd.m3u8 或 /gslb/dsdqbv/…,
+     一条都不含。写了拒收, 实际从没拦下过一条;
+  ② 91.6%(131/143)的线路是**裸 IP**, 官方 CDN 只有 2 条; 且 107.150.60.122
+     一个 IP 承载 **33 个不同台**, 63.141.230.178 承载 25 个, 38.75.136.137
+     承载 24 个 —— 正规 CDN 绝不这样部署, 这是"IPTV 线路分发面板", 靠起播
+     15 秒贴片变现, 起播广告就是它加的;
+  ③ 静态判据卡在数学边界: 要求 分片>=15s **且** >2.5x中位数, 而直播切片
+     普遍 6 秒 —— 2.5x6=15, 判断退化成 "15 > 15" = False, **15 秒广告
+     必然漏判**(10s/12s 起播贴片同样漏)。
+  改动(用户拍板"干净优先, 宁少勿滥" + "加起播实测"):
+  ① 新增 LIVE_AD_HOST_CH=5: 裸 IP 且承载>=5 个不同频道 -> 判广告分发站,
+     整站线路剔除。只对**裸 IP**生效 —— 域名型 host 扛多个台可能是省级 IPTV
+     平台或广电公开 CDN(实测河北广电 event.pull.hebtv.com 就扛 20 个台),
+     一起判会整片误杀;
+  ② 新增起播实测: 每台前 LIVE_START_CHECK(=4) 条候选, 间隔数秒抓两次索引,
+     比对 MEDIA-SEQUENCE —— 真直播滑窗必前移, 不前进 / 出现 EXT-X-ENDLIST
+     或 PLAYLIST-TYPE:VOD 就是"预置一段片子循环播"的广告垫片, 直接不收。
+     这才是"测不出起播广告"的真正原因: 抓一次索引时滑窗早已滑过去, 起播
+     那一刻根本不在文本里。两阶段抓取中间**全局只等一次**, 不是每条各等一次;
+  ③ 静态判据改相对倍数: 分片 >2.0x中位数 且 >=12s; 首片 >1.8x中位数 且
+     >=9s。绝对秒数只做下限(防 1~2 秒切片被倍数判据误伤);
+  ④ 熔断加 cand_ch: 主动剔除会让出线台数从 52 腰斩到 21, 拿淘汰后的数去比
+     每轮都会被误判成"上游挂了"从而拒绝写文件 —— 改用"剔除前的候选台数"
+     判上游抖动, 并保留"全被剔干净(0 个)"的兜底拦截;
+  ⑤ report 新增「广告治理」小节: 哪个 IP 被判分发站、剔除多少条、哪些台
+     因"宁少勿滥"被清空, 全部写清楚 —— 否则用户只会看到"台少了";
+  ⑥ 测试 51 → 56 项(判据边界回归 / 裸IP识别 / 分发站判定 / 两次快照比对 /
+     熔断区分主动剔除)
+
 用法:
   python check_sources.py [--sources 路径] [--gitee]
 """
@@ -316,6 +378,15 @@ UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
 # ---- 直播参数 ----
 LIVE_MAX_CAND = 16    # 每频道最多实测候选地址数(v2: 8->16 吃满大池)
 LIVE_KEEP = 3         # 每频道保留主线路数(高清层)
+# v13(方案C): 深探配额。2026-10-27 那轮 report 里 133 条线路 100% 标"未实测"
+# —— runner 上 ffprobe 缺席, 画质和存活实际一条都没验过, 全靠索引里的地址
+# 蒙对。修好 ffprobe 之后也不能全量深探: 候选上限 52 台 × 16 = 832 条, 每条
+# ffprobe 最长 TIMEOUT_PROBE=12 秒, 最坏情况能把 job 拖到超时。所以分两级:
+#   第一轮 浅探: 全量候选, 只发 HTTP 拉索引(判活 + 广告指纹 + master 声明), 秒级
+#   第二轮 深探: 每台只对浅探排在最前的 LIVE_DEEP_PER_CH 条跑 ffprobe 测画质
+# 用户拍板方案C: "只实测每台第一条, 备用线只探活"。给 2 而不是 1, 是因为
+# 排第一的线可能画质不达标(测出 480p), 留一条余量让这台仍能拿到实测高清线。
+LIVE_DEEP_PER_CH = 2
 # v12: m3u 每台只写 1 条。v10 写满3条换来的是"电视上一台显示3个同名频道",
 # 而 m3u 没有多线路语法, 两者不可兼得 —— 多线路改由 live.txt 承担。
 LIVE_M3U_KEEP = 1
@@ -333,8 +404,32 @@ LIVE_NO_IPV6 = True   # 用户家无 IPv6: 含 IPv6 地址的线路一律不要
 # 2026-10-27 家中实看每台插广告实锤 —— 换血后 livekey/bfgd/txiptv 线放量
 AD_URL_PATS = ('livekey=', 'streamid=', 'key=txiptv', 'authid=',
                '/bfgd/', '/tsfile/live/')
-AD_SEG_DUR = 15       # v6: 分片>=15s 且 >2.5x中位数 才算拼接长段
-AD_FIRST_DUR = 10     # 首片>=10s 且>3倍后续中位数 = 起播贴片特征
+
+# ---- v14: 广告治理重做(用户拍板"干净优先, 宁少勿滥" + "加起播实测") ----
+# 起因: 用户报"很多台要先播广告才播正片"。复核线上 143 条线路后实测到三条:
+#
+# ① AD_URL_PATS 命中率 **0/143**。规则写的是 livekey= / bfgd 这类参数特征,
+#    而实际线路是裸 IP + /live/cctv1hd.m3u8 或 /gslb/dsdqbv/... —— 一条不含。
+#    等于"写了拒收, 实际一条都没拦过"。
+# ② 91.6% 的线路是裸 IP(131/143), 官方 CDN 仅 2 条。且 107.150.60.122 一个 IP
+#    承载 33 个不同台、63.141.230.178 承载 25 个、38.75.136.137 承载 24 个。
+#    一个 IP 跑三十几个央视+卫视, 这不是 CDN 部署, 是"IPTV 线路分发面板" ——
+#    靠起播 15 秒贴片变现, 起播广告就是它加的。这条判据最强且零成本。
+# ③ 旧静态判据卡在数学边界: 要求 分片>=15s **且** >2.5x中位数。6 秒切片时
+#    2.5x6=15, 判断退化成 "15 > 15" = False —— 15 秒广告在 6 秒切片下**必然漏判**
+#    (10s/12s 起播贴片同样漏)。改为相对倍数 + 下限, 见下。
+#
+# 另: 起播贴片发生在"按下播放那一刻", 抓一次索引看不见(那时滑窗早已滑过去)。
+# 故新增起播实测: 间隔 LIVE_START_GAP 秒抓两次索引, 真直播的 MEDIA-SEQUENCE
+# 必然前进; 不前进 / 出现 ENDLIST / PLAYLIST-TYPE:VOD = 循环垫片的伪直播。
+LIVE_AD_HOST_CH = 5     # 裸IP承载>=5个不同频道 -> 判广告分发站, 整站线路剔除
+LIVE_START_CHECK = 4    # 每台做"起播快照"的候选数(浅探后按快/高清排序取前N)
+LIVE_START_GAP = 6      # 两次快照间隔(秒); 全局只等这一轮, 不是每条各等一次
+# 静态贴片判据: 相对倍数为主, 绝对秒数只做下限(防 1~2 秒切片被倍数判据误伤)
+AD_SEG_RATIO = 2.0      # 某分片 > 中位数 2.0 倍
+AD_SEG_MIN = 12         # 且不短于 12 秒
+AD_FIRST_RATIO = 1.8    # 首片 > 中位数 1.8 倍
+AD_FIRST_MIN = 9        # 且不短于 9 秒
 
 # ---- 目录仓发现(自动找点播源) ----
 # D| 开头的行: 目录仓的 resources.json 地址, 自动提取其中 tvbox_config 类的
@@ -360,6 +455,11 @@ if not (FFPROBE_BIN or FFMPEG_BIN):
         FFMPEG_BIN = imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:
         pass
+
+# v13: 探测工具是否真的可用 —— 只有 imageio-ffmpeg(有 ffmpeg 无 ffprobe)时
+# ffprobe_res 走 ffmpeg 分支, 也算可用; 两个都没有时深探纯属空转(每条线都要
+# 走一遍函数才发现没工具), 直接跳过, 免得白排一轮队
+PROBE_AVAILABLE = bool(FFPROBE_BIN or FFMPEG_BIN)
 
 # v6: 老版本 ffprobe 不认 -headers/-rw_timeout 这类输入选项, 一旦报
 # "Unrecognized option" 就永久降级为裸命令, 避免所有探测一起失败
@@ -1374,23 +1474,138 @@ def is_ad_url(u):
 
 
 def live_index_ads(txt):
-    """v6: m3u8索引广告指纹 —— 相对判定, 不误杀均匀切片/单次重连:
-    ① DISCONTINUITY 出现 >=2 次: 流内多处拼接 = 插广告的强信号;
+    """v14: m3u8索引广告指纹 —— 相对倍数 + 绝对下限(修 v6 的边界 bug):
+    ① DISCONTINUITY 出现 >=2 次: 流内多处拼接 = 插广告强信号;
        单次多为编码器重连或节目切换(官方源也常见), 放行;
-    ② 某分片 >=15s 且 >2.5x中位数: 拼入广告段会突兀变长;
-       均匀20s的慢切片直播中位数同为20s, 不触发(旧版一律拒收);
-    ③ 首片 >=10s 且 >3x中位数: 起播贴片特征.
-    注: 只取当前窗口(通常3-6段), 判定不了的情况宁可放行, 次日会再测一遍"""
+    ② 某分片 >2.0x中位数 且 >=12s: 拼入广告段会突兀变长;
+       均匀20s的慢切片中位数同为20s, 2.0x=40s 不触发;
+    ③ 首片 >1.8x中位数 且 >=9s: 起播贴片特征.
+    v6 旧判据是 ">=15s 且 >2.5x中位数", 6 秒切片时退化成 "15>15" 恒 False,
+    15 秒广告与 10/12 秒起播贴片**全部漏判** —— v14 改成倍数主导。
+    注: 只取当前窗口(通常3-6段), 判定不了的情况宁可放行, 次日会再测一遍。
+    起播贴片真正的判据在 judge_preroll()(两次快照比对), 这里只是静态兜底"""
     if txt.count('DISCONTINUITY') >= 2:
         return True
     durs = [float(m) for m in re.findall(r'#EXTINF:([\d.]+)', txt)]
     if len(durs) >= 3:
         med = sorted(durs)[len(durs) // 2]
-        if med > 0 and any(d >= AD_SEG_DUR and d > 2.5 * med for d in durs):
-            return True
-        if durs[0] >= AD_FIRST_DUR and med > 0 and durs[0] > 3 * med:
-            return True
+        if med > 0:
+            if any(d >= AD_SEG_MIN and d > AD_SEG_RATIO * med for d in durs):
+                return True
+            if (durs[0] >= AD_FIRST_MIN
+                    and durs[0] > AD_FIRST_RATIO * med):
+                return True
     return False
+
+
+def is_bare_ip(host):
+    """v14: 裸 IP(无域名)判定 —— 广告分发站的强特征之一。
+    正规 CDN 用域名+多节点; 卖线路的面板通常是 1~2 个 VPS 的裸 IP 扛几十个台"""
+    if not host:
+        return False
+    return bool(re.match(r'^\d{1,3}(?:\.\d{1,3}){3}$', host))
+
+
+def host_channel_map(pairs):
+    """v14: {host: {频道名}} —— 统计每个 host 承载了多少个**不同**频道。
+    pairs 是 (频道名, url) 的序列。返回 {host: set(频道名)}。
+    纯文本计算, 不发请求; 用于识别"一个 IP 跑几十个台"的分发面板。"""
+    m = {}
+    for name, u in pairs:
+        try:
+            host = urllib.parse.urlsplit(u).hostname or ''
+        except Exception:
+            continue
+        if host:
+            m.setdefault(host, set()).add(name)
+    return m
+
+
+def pick_ad_hosts(host_map, min_ch=None):
+    """v14: 从 host->频道集合 里挑出广告分发站。
+    判据: **裸 IP** 且 承载 >= LIVE_AD_HOST_CH 个不同频道。
+    为什么要"裸 IP"这一条: 域名型 host 承载多个台可能是正规 CDN
+    (省级 IPTV 平台、广电的公开 CDN 都是一域名多台), 误杀代价太高;
+    而裸 IP 扛几十个台几乎没有正当理由 —— 实测线上正是这三四个 IP 扛了 82 个台次。"""
+    lim = LIVE_AD_HOST_CH if min_ch is None else min_ch
+    return {h for h, chs in host_map.items()
+            if is_bare_ip(h) and len(chs) >= lim}
+
+
+def snapshot_playlist(txt):
+    """v14: 把一份 m3u8 解析成可比对的快照。
+    只取判定"是不是真直播"需要的字段, 不做任何网络请求。
+    返回 None 表示这不是可解析的 m3u8。"""
+    if not txt or '#EXTM3U' not in txt:
+        return None
+    durs = [float(m) for m in re.findall(r'#EXTINF:([\d.]+)', txt)]
+    m = re.search(r'#EXT-X-MEDIA-SEQUENCE:(\d+)', txt)
+    seq = int(m.group(1)) if m else None
+    m = re.search(r'#EXT-X-TARGETDURATION:(\d+)', txt)
+    target = int(m.group(1)) if m else 0
+    # 分片地址(去掉协议/主机差异, 只留 path+query 便于比对)
+    segs = [ln.strip() for ln in txt.splitlines()
+            if ln.strip() and not ln.lstrip().startswith('#')]
+    return {
+        'seq': seq,
+        'segs': segs,
+        'n': len(durs),
+        'durs': durs,
+        'target': target,
+        # master 清单里的"分片"其实是各档 variant 地址, 天生固定不变,
+        # 不能拿它比"有没有前进" —— 必须单独标出来
+        'master': '#EXT-X-STREAM-INF' in txt,
+        'endlist': '#EXT-X-ENDLIST' in txt,
+        'vod': bool(re.search(r'#EXT-X-PLAYLIST-TYPE:\s*VOD', txt, re.I)),
+        'disc': txt.count('DISCONTINUITY'),
+    }
+
+
+def judge_preroll(a, b):
+    """v14: 起播贴片/伪直播判定 —— 比对同一地址间隔数秒的两次快照。
+    返回 (is_fake, reason)。is_fake=True 表示"这条线起播要过广告"。
+
+    判据(命中任一即假):
+      ① 出现 EXT-X-ENDLIST 或 PLAYLIST-TYPE:VOD —— 真直播绝不会标记"播完了",
+         这是"预置一段片子循环播"的广告垫片最典型形态;
+      ② 两次 MEDIA-SEQUENCE 都没前进 —— 直播滑窗每几秒必前移, 不动就是循环;
+      ③ 没有 MEDIA-SEQUENCE 时, 退化为"两次分片列表完全相同"(同样说明没在往前走)。
+
+    master 清单直接放行: 它列的是 variant 地址, 本来就不变, 不是判据。
+    a/b 任一为 None(拉不到/不是m3u8)时判不了, 返回 (False, '') 放行 ——
+    宁可放行次日再测, 也不拿"测不出"当"有问题"去误杀。"""
+    if not a or not b:
+        return False, ''
+    if a.get('master') or b.get('master'):
+        return False, ''
+    if a['endlist'] or a['vod']:
+        return True, 'VOD/ENDLIST(预置循环)'
+    if a['seq'] is not None and b['seq'] is not None:
+        if b['seq'] <= a['seq']:
+            return True, '索引不前进(seq %d->%d)' % (a['seq'], b['seq'])
+        return False, ''
+    if a['segs'] and a['segs'] == b['segs']:
+        return True, '分片列表不变(非直播)'
+    return False, ''
+
+
+def fetch_snapshot(url, ua=None, ref=None):
+    """v14: 抓一次 m3u8 并解析成快照(起播实测专用)。
+    与 probe_live 分开是有意的: 这里只要"两次抓取的差异", 不判活、不判画质、
+    不做广告判据 —— 复用 probe_live 会白白多跑一遍 ffprobe, 也让判据混在一起。"""
+    headers = dict(UA)
+    if ua:
+        headers['User-Agent'] = ua
+    if ref:
+        headers['Referer'] = ref
+    try:
+        st, data = http_get(url, TIMEOUT_LIVE, max_bytes=65536,
+                            headers=headers)
+        if st != 200:
+            return None
+        return snapshot_playlist(data.decode('utf-8', 'ignore'))
+    except Exception:
+        return None
 
 
 def live_has_ads(txt):
@@ -1401,11 +1616,14 @@ def live_has_ads(txt):
     return spread
 
 
-def probe_live(url, ua=None, ref=None):
+def probe_live(url, ua=None, ref=None, deep=True):
     """直播线路体检: 返回 dict(ok,w,h,method,ms)
     清晰度以 ffmpeg 实测为准; master声明仅在ffprobe失败时佐证;
     名字标签一律不作为画质依据(宁缺勿滥)
-    v6: 补 ref(Referer) —— 部分源校验来源, 不带就 403"""
+    v6: 补 ref(Referer) —— 部分源校验来源, 不带就 403
+    v13: deep=False 时**不跑 ffprobe**, 只做 HTTP 拉索引(判活 + 广告指纹 +
+    master 声明)。第一轮全量浅探用它(832 条候选也就几秒), 第二轮才对每台
+    前 LIVE_DEEP_PER_CH 条用 deep=True 测真实画质。"""
     t0 = time.time()
     headers = dict(UA)
     if ua:
@@ -1452,14 +1670,20 @@ def probe_live(url, ua=None, ref=None):
                     master_res, master_kbps = (w, h), kbps
         base['kbps'] = master_kbps
         # ffmpeg 实测复核(优先); master声明仅佐证
-        w, h = ffprobe_res(url, ua, ref)
-        if w:
-            return dict(base, w=w, h=h, method='ffmpeg')
+        # v13: 浅探不测画质 —— 只有 master 声明就先用声明值, 连声明都没有就
+        # 退回 base(w=0), 由第二轮深探来定; 这样第一轮零 ffprobe 开销
+        if deep:
+            w, h = ffprobe_res(url, ua, ref)
+            if w:
+                return dict(base, w=w, h=h, method='ffmpeg')
         if master_res:
             return dict(base, w=master_res[0], h=master_res[1],
                         method='master')
         return base
     # 非m3u8文本(可能是flv/ts/php转发的流)
+    # v13: 这类只能靠 ffprobe 判画质, 浅探阶段一律先记"可达但未知"
+    if not deep:
+        return {'ok': True, 'w': 0, 'h': 0, 'method': '', 'ms': ms}
     w, h = ffprobe_res(url, ua, ref)
     if w:
         return {'ok': True, 'w': w, 'h': h, 'method': 'ffmpeg', 'ms': ms}
@@ -1489,16 +1713,21 @@ def rr_pick(urls_dict, n):
 def pick_live_urls(hd, backup, unver):
     """选定该频道最终线路, 返回 (urls, n_unver)。
     主力 hd(>=720p) 优先; 不足 LIVE_KEEP 用 backup(>=540p) 补齐;
-    一条实测线都没有时, 才用 unver(索引可达但测不出分辨率)兜底 ——
-    所以永远不会因兜底而挤掉任何实测通过的线"""
+    v13: 仍不足时用 unver(探活通过但本轮没深测画质)补满 —— 方案C 每台只深测
+    前 2 条, 第 3 条线天生没有实测结果; 旧逻辑"有实测线就绝不碰 unver"会让
+    所有台都退化成 2 条线。补位**只在不够数时发生**, 绝不挤掉任何已实测的线,
+    且把补了几条报回去, 让 report 明确标出哪些是"未实测补位"。
+    一条实测线都没有时, 仍然全用 unver 兜底(此时 n_unver = 实际条数)。"""
     urls = hd[:LIVE_KEEP]
     if len(urls) < LIVE_KEEP:
         urls += backup[:LIVE_KEEP - len(urls)]
-    if urls or not unver:
-        return urls, 0
-    unver = sorted(unver, key=lambda x: x['ms'])
-    picked = unver[:LIVE_KEEP]
-    return picked, len(picked)
+    n_unver = 0
+    if len(urls) < LIVE_KEEP and unver:
+        need = LIVE_KEEP - len(urls)
+        picked = sorted(unver, key=lambda x: x['ms'])[:need]
+        urls += picked
+        n_unver = len(picked)
+    return urls, n_unver
 
 
 def collect_live(wl):
@@ -1554,28 +1783,145 @@ def collect_live(wl):
                              'err': str(e)[:60]})
             log('[直播上游失败] %s -> %s' % (alias or u, str(e)[:60]))
 
+    # ---- v14: 广告分发站剔除(用户拍板"干净优先, 宁少勿滥") ----
+    # 判据: 裸 IP 且承载 >= LIVE_AD_HOST_CH 个不同频道。
+    # 线上实测 143 条里 131 条是裸 IP, 而 107.150.60.122 一个 IP 扛 33 个台、
+    # 63.141.230.178 扛 25 个、38.75.136.137 扛 24 个 —— 正规 CDN 不会这么部署,
+    # 这是"IPTV 线路分发面板", 靠起播贴片变现, 起播广告就是它加的。
+    # 代价(已与用户确认): 52 个台里约 31 个只有这类线路, 会被清空 —— 宁可少。
+    pairs = [(k, u) for k, c in cands.items() for u in c['urls']]
+    host_map = host_channel_map(pairs)
+    ad_hosts = pick_ad_hosts(host_map)
+    ad_stats = {'hosts': [], 'dropped': [], 'n_line': 0,
+                # v14: 剔除前的候选台数 —— 熔断用它判"上游是不是挂了",
+                # 而不是用淘汰后的出线数(那会被主动剔除误判成腰斩)
+                'n_chan_cand': len(cands)}
+    if ad_hosts:
+        ad_stats['hosts'] = sorted(
+            [(h, len(host_map[h])) for h in ad_hosts], key=lambda x: -x[1])
+        for key in list(cands.keys()):
+            keep = {u: m for u, m in cands[key]['urls'].items()
+                    if (urllib.parse.urlsplit(u).hostname
+                        or '') not in ad_hosts}
+            ad_stats['n_line'] += len(cands[key]['urls']) - len(keep)
+            if keep:
+                cands[key]['urls'] = keep
+            else:
+                ad_stats['dropped'].append(key)
+                cands.pop(key)
+        log('[直播广告站] 剔除 %d 个裸IP分发站(单IP扛>=%d个台), 共 %d 条线路: %s'
+            % (len(ad_hosts), LIVE_AD_HOST_CH, ad_stats['n_line'],
+               ', '.join('%s(%d台)' % (h, n) for h, n in ad_stats['hosts'][:6])))
+        if ad_stats['dropped']:
+            log('[直播广告站] 只剩这类线路、因"宁少勿滥"清空的台 %d 个: %s'
+                % (len(ad_stats['dropped']), ', '.join(ad_stats['dropped'])))
+
     tasks = []
     for key, c in cands.items():
         for u, meta in rr_pick(c['urls'], LIVE_MAX_CAND):
             tasks.append((key, u, meta.get('ua'), meta.get('raw'),
                           meta.get('ref')))
-    log('直播候选线路共 %d 条(白名单频道 %d 个), 并发实测...' % (
+    log('直播候选线路共 %d 条(白名单频道 %d 个), 第一轮浅探(只判活)...' % (
         len(tasks), len(cands)))
     probe_res = {}
     with ThreadPoolExecutor(MAX_WORKERS) as ex:
-        futs = {ex.submit(probe_live, u, ua, ref): (key, u, raw)
+        futs = {ex.submit(probe_live, u, ua, ref, False):
+                (key, u, raw, ua, ref)
                 for key, u, ua, raw, ref in tasks}
         for fu in as_completed(futs):
-            key, u, raw = futs[fu]
-            probe_res[(key, u)] = (fu.result(), raw)
+            key, u, raw, ua, ref = futs[fu]
+            probe_res[(key, u)] = {'r': fu.result(), 'raw': raw,
+                                   'ua': ua, 'ref': ref}
+
+    # ---- v14: 起播实测(间隔抓两次索引, 判"伪直播/起播贴片") ----
+    # 为什么必须实测: 起播贴片发生在"按下播放那一刻", 而抓一次索引时滑窗
+    # (通常 3-6 段)早已滑过去, 静态文本里根本看不见 —— 这就是 v5~v13 一直
+    # 说"测不出"的真正原因, 不是测不出, 是判据看错了地方。
+    # 只对每台排前 LIVE_START_CHECK 条做: 每台最终只用 3 条, 全量做既慢又无意义。
+    # 两阶段抓取, 中间**全局只等一次**; 若按每条各等一次, 200 条就是 200 倍等待。
+    start_cands = []
+    for key in cands:
+        rows = [(u, d) for (k2, u), d in probe_res.items()
+                if k2 == key and d['r'].get('ok')]
+        rows.sort(key=lambda x: (-((x[1]['r'].get('w') or 0) *
+                                   (x[1]['r'].get('h') or 0)),
+                                 x[1]['r'].get('ms') or 0))
+        for u, d in rows[:LIVE_START_CHECK]:
+            start_cands.append((key, u, d['ua'], d['ref']))
+
+    preroll_flags = {}     # (key,u) -> 判为伪直播的原因
+    if start_cands:
+        def _snap_all():
+            out = {}
+            with ThreadPoolExecutor(MAX_WORKERS) as ex:
+                futs = {ex.submit(fetch_snapshot, u, ua, ref): (key, u)
+                        for key, u, ua, ref in start_cands}
+                for fu in as_completed(futs):
+                    out[futs[fu]] = fu.result()
+            return out
+
+        snap_a = _snap_all()
+        # 等待时长要够让滑窗真的前移: 慢切片(target=20s)等 10 秒也可能不动,
+        # 所以取 max(基础间隔, 最大target+2), 上限 20 秒, 避免拖长整轮
+        mx = max([s['target'] for s in snap_a.values() if s] or [0])
+        gap = min(20, max(LIVE_START_GAP, mx + 2))
+        log('直播起播实测: %d 条候选, 间隔 %d 秒抓第二次索引...'
+            % (len(start_cands), gap))
+        time.sleep(gap)
+        snap_b = _snap_all()
+        for ck in snap_a:
+            fake, why = judge_preroll(snap_a[ck], snap_b[ck])
+            if fake:
+                preroll_flags[ck] = why
+        log('[直播起播广告] 判为伪直播/贴片 %d 条%s' % (
+            len(preroll_flags),
+            (': ' + '; '.join('%s(%s)' % (k, v)
+                              for (k, _), v in list(preroll_flags.items())[:5]))
+            if preroll_flags else ''))
+
+    # ---- v13 第二轮: 只给每台排在前面的几条测真画质(方案C) ----
+    # 排序依据只能是浅探拿得到的信息: master 声明的分辨率(有就信, 它写在
+    # 索引里是本台的自我声明) > 探活延迟(快线优先)。死线(ok=False)不占名额,
+    # 否则名额会被"能连上但 404"的线白白吃掉。
+    deep_cands = []
+    for key in cands:
+        rows = [(u, d) for (k2, u), d in probe_res.items()
+                if k2 == key and d['r'].get('ok')
+                and (k2, u) not in preroll_flags]
+        rows.sort(key=lambda x: (-((x[1]['r'].get('w') or 0) *
+                                   (x[1]['r'].get('h') or 0)),
+                                 x[1]['r'].get('ms') or 0))
+        for u, d in rows[:LIVE_DEEP_PER_CH]:
+            deep_cands.append((key, u, d['ua'], d['raw'], d['ref']))
+    if not PROBE_AVAILABLE:
+        log('[直播] 无 ffprobe/ffmpeg, 跳过深探 —— 本轮线路全部按"未实测"记账')
+    elif deep_cands:
+        log('直播第二轮深探(ffprobe 实测画质) %d 条 / 候选 %d 条' % (
+            len(deep_cands), len(tasks)))
+        with ThreadPoolExecutor(MAX_WORKERS) as ex:
+            futs2 = {ex.submit(probe_live, u, ua, ref, True): (key, u, raw)
+                     for key, u, ua, raw, ref in deep_cands}
+            for fu in as_completed(futs2):
+                key, u, raw = futs2[fu]
+                prev = probe_res.get((key, u)) or {}
+                probe_res[(key, u)] = {'r': fu.result(), 'raw': raw,
+                                       'ua': prev.get('ua'),
+                                       'ref': prev.get('ref')}
 
     channels = []
+    preroll_dropped = []    # v14: 因起播广告被清空的台
     for key, c in cands.items():
         hd = []        # v2: 高清层(>=720p) —— 主力线路
         backup = []    # v2: 备用层(>=540p) —— 换线保底, 有得换好过没得换
         unver = []     # v8: 索引合法但测不出分辨率(见下方说明)
-        for (k2, u), (r, raw) in probe_res.items():
+        n_preroll = 0  # v14: 本台被起播实测剔掉的条数
+        for (k2, u), d in probe_res.items():
+            r, raw = d['r'], d['raw']
             if k2 != key or not r['ok']:
+                continue
+            # v14: 起播实测判为伪直播/贴片的线一律不收(用户拍板"宁少勿滥")
+            if (k2, u) in preroll_flags:
+                n_preroll += 1
                 continue
             w, h, method = r['w'], r['h'], r['method']
             # 清晰度必须实测: 实测不出分辨率的线路一律不收(名字标签不作依据)
@@ -1610,6 +1956,9 @@ def collect_live(wl):
             log('[直播兜底] %s 无实测线, 收 %d 条未实测(仅索引可达)'
                 % (key, n_unver))
         if not urls:
+            # v14: 分清"本来就没线"和"被起播广告清空" —— 后者要单独告诉用户
+            if n_preroll:
+                preroll_dropped.append((key, n_preroll))
             continue
         channels.append({'name': key, 'group': c['entry']['group'],
                          'epg': c['entry'].get('epg'),
@@ -1620,7 +1969,13 @@ def collect_live(wl):
 
     order = {g: i for i, g in enumerate(LIVE_GROUPS)}
     channels.sort(key=lambda c: (order.get(c['group'], 9), c['name']))
-    return channels, up_stats
+    if preroll_dropped:
+        log('[直播起播广告] 因起播实测被清空的台 %d 个: %s'
+            % (len(preroll_dropped),
+               ', '.join('%s(%d条)' % (k, n) for k, n in preroll_dropped)))
+    ad_stats['preroll'] = preroll_flags
+    ad_stats['preroll_dropped'] = preroll_dropped
+    return channels, up_stats, ad_stats
 
 
 def write_ads_pool(con, one):
@@ -1901,10 +2256,24 @@ def load_prev_stats():
     return n_api, n_ch
 
 
-def circuit_broken(prev_api, prev_ch, new_api, new_ch):
-    """本轮比上一版腰斩则熔断, 返回 (是否熔断, 原因)"""
+def circuit_broken(prev_api, prev_ch, new_api, new_ch, cand_ch=None):
+    """本轮比上一版腰斩则熔断, 返回 (是否熔断, 原因)
+
+    v14: cand_ch = 本轮"归集到的候选台数"(剔除广告站之前)。给了它就用它判
+    频道维度 —— 因为 v14 主动剔除广告分发站会让出线台数从 52 腰斩到 21,
+    那是策略不是故障。拿淘汰后的数去比, 每轮都会误判成"上游挂了"从而拒绝
+    写文件, 改动等于完全没生效。候选数没掉, 说明上游是好的。
+    不给 cand_ch 时行为与旧版完全一致(老测试照旧通过)。"""
     if prev_api >= CIRCUIT_MIN_API and new_api < prev_api * CIRCUIT_RATIO:
         return True, '接口数腰斩 %d -> %d' % (prev_api, new_api)
+    if cand_ch is not None:
+        # 上游抖动 -> 连候选都归集不到; 主动淘汰 -> 候选不变、只有出线变少
+        if prev_ch >= CIRCUIT_MIN_CH and cand_ch < prev_ch * CIRCUIT_RATIO:
+            return True, '候选频道数腰斩 %d -> %d' % (prev_ch, cand_ch)
+        # 兜底: 全部被剔干净也不能真的写一份空直播出去
+        if new_ch == 0 and prev_ch >= CIRCUIT_MIN_CH:
+            return True, '直播台全部被剔除(0 个)'
+        return False, ''
     if prev_ch >= CIRCUIT_MIN_CH and new_ch < prev_ch * CIRCUIT_RATIO:
         return True, '频道数腰斩 %d -> %d' % (prev_ch, new_ch)
     return False, ''
@@ -1968,8 +2337,11 @@ def write_multi_files(scored, nav_children):
             continue
         idx += 1
         fn = 'multi/m%d.json' % idx
+        # v13: 与 store.json 同步改 urls 格式(storeHouse 电视上选不开)
         with open(os.path.join(HERE, fn), 'w', encoding='utf-8') as f:
-            json.dump({'storeHouse': kept}, f, ensure_ascii=False, indent=2)
+            json.dump({'urls': [{'url': k['sourceUrl'], 'name': k['sourceName']}
+                                for k in kept]},
+                      f, ensure_ascii=False, indent=2)
         mscore = min(subs) if subs else 0   # v4: 清理版分数=最低子仓分
         disp = '%s·清理版%d仓' % (as_str(nav.get('name') or '多仓')[:14], len(kept))
         out.append((disp, fn, mscore, len(kept)))
@@ -2093,7 +2465,13 @@ def write_store(scored, repo, live_ok, multi_entries=None, mine_sites=0):
         entries.append({'sourceName': name,
                         'sourceUrl': tv_url(as_str(s.get('url')))})
 
-    cfg = {'storeHouse': entries}
+    # v13: 多仓格式 storeHouse -> urls。实锤过程(2026-10-28):
+    #   同一个仓(挺好分享 thdjk.json), 在 GYCK.json 的 {"urls":[{"url","name"}]}
+    #   格式里电视能选开; 在本仓 {"storeHouse":[{"sourceName","sourceUrl"}]}
+    #   格式里列表能显示、选中就"接口无效"。影视仓 V5.0.31 对 storeHouse
+    #   只展示不兼容, urls 是饭太硬/肥猫/GYCK 通用的主流写法。
+    cfg = {'urls': [{'url': e['sourceUrl'], 'name': e['sourceName']}
+                    for e in entries]}
     with open(STORE, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
     log('store.json 已生成: %d 个入口(直播%d + 点播仓%d; 候选%d, '
@@ -2108,7 +2486,7 @@ def write_store(scored, repo, live_ok, multi_entries=None, mine_sites=0):
 
 
 def write_report(items, alive, suspect, deadlist, scored, channels,
-                 up_stats, now, trip=''):
+                 up_stats, now, trip='', ad_stats=None):
     repo = os.environ.get('GITHUB_REPOSITORY', '')
     lines = ['# TVBox 源检测报告', '', '检测时间: %s (北京时间)' % now, '']
     if trip:
@@ -2219,20 +2597,71 @@ def write_report(items, alive, suspect, deadlist, scored, channels,
                '收录标准: 主线路 ffmpeg拉流实测 >= 720p;'
                '备用线路 >= 540p(保证有线路可换);',
                '排序: 稳定优先(延迟分档) > 分辨率 —— 高画质但高延迟的烂线不再排第一;',
-               '拒收: IPv6线路 / 运营源(livekey·txiptv·bfgd等贴片广告线,'
-               '2026-10-27家中实看每台插广告实锤) / 实测不出分辨率'
-               '(例外: 该台一条实测线都没有时, 收索引可达的兜底线, 表中标"未实测") /'
-               '索引广告指纹(DISCONTINUITY>=2次拼接·分片>2.5倍中位数的异常长段'
-               '·首片超长起播贴片·ts域名分散; v6 改相对判定, 均匀长切片与'
-               '单次重连不误杀);',
+               '拒收: IPv6线路 / 运营源(livekey·txiptv·bfgd等贴片广告线) /'
+               '实测不出分辨率(例外: 该台一条实测线都没有时, 收索引可达的'
+               '兜底线, 表中标"未实测") /'
+               '索引广告指纹(DISCONTINUITY>=2次拼接·分片>2倍中位数的异常长段'
+               '·首片>1.8倍中位数的起播贴片·ts域名分散);',
+               'v14(广告治理, 用户拍板"干净优先, 宁少勿滥"):',
+               ' ① **广告分发站整站剔除** —— 裸IP且单IP扛 >=%d 个不同频道;'
+               '    实测线上 107.150.60.122 一个IP扛33个台, 属"IPTV线路分发'
+               '面板", 起播贴片就是它加的;' % LIVE_AD_HOST_CH,
+               ' ② **起播实测** —— 每台前 %d 条候选间隔数秒抓两次索引:'
+               '    MEDIA-SEQUENCE 不前进 / 出现 ENDLIST·PLAYLIST-TYPE:VOD'
+               ' = 预置循环的伪直播, 直接不收(静态文本看不见起播那一刻,'
+               '这才是"测不出广告"的真正原因);' % LIVE_START_CHECK,
+               ' ③ 静态判据改**相对倍数**(旧版">=15s 且 >2.5x中位数"在 6 秒'
+               '切片下退化成"15>15"恒假, 15秒广告必然漏判);',
+               '代价: 只剩广告站线路的台会被清空 —— 宁可少, 不要打开就广告。',
                'v12: 主力源是 live.txt(TVBox txt 格式) —— 一行一个台, 多线路用'
                ' "#" 分隔, 电视上"一台只显示一次"+播放时可切线路;'
-               ' live.m3u 每台只留 1 条(旧播放器兼容), live.json 保留备查。', '',
-               '| 频道 | 分组 | 线路数 | 高清/备线 | 最佳画质 |',
-               '|---|---|---|---|---|']
+               ' live.m3u 每台只留 1 条(旧播放器兼容), live.json 保留备查。',
+               'v13: 两级探测 —— 每台全部候选先浅探(只拉索引判活, 零 ffprobe),'
+               ' 再对排最前的 %d 条用 ffprobe 实测画质; 因此"最佳画质"列是实测值,'
+               ' 带 "(+N条未实测)" 表示还有 N 条备用线只做了探活。'
+               % LIVE_DEEP_PER_CH, '']
+    # ---- v14: 广告治理小节(用户最关心"为什么台变少了", 必须写在频道表前面) ----
+    if ad_stats:
+        hosts = ad_stats.get('hosts') or []
+        drop_ch = ad_stats.get('dropped') or []
+        pre = ad_stats.get('preroll') or {}
+        pre_ch = ad_stats.get('preroll_dropped') or []
+        lines += ['### 广告治理 (v14)', '']
+        if hosts:
+            lines.append('**① 广告分发站剔除**: %d 个裸IP单IP扛>=%d个台, '
+                         '共剔除 %d 条线路' % (
+                             len(hosts), LIVE_AD_HOST_CH,
+                             ad_stats.get('n_line', 0)))
+            lines += ['', '| 分发站IP | 承载频道数 |', '|---|---|']
+            for h, n in hosts:
+                lines.append('| `%s` | %d |' % (h, n))
+            lines.append('')
+        else:
+            lines += ['**① 广告分发站剔除**: 本轮没发现(单IP扛<%d个台)'
+                      % LIVE_AD_HOST_CH, '']
+        lines.append('**② 起播实测**: 判为伪直播/贴片的线路 %d 条%s' % (
+            len(pre),
+            ('（%s）' % ', '.join(sorted(set(pre.values()))[:3])) if pre else ''))
+        if drop_ch or pre_ch:
+            lines.append('')
+            lines.append('**③ 因"宁少勿滥"被清空的台**: %d 个' % (
+                len(drop_ch) + len(pre_ch)))
+            if drop_ch:
+                lines.append('- 只有广告分发站线路: %s' % '、'.join(drop_ch))
+            if pre_ch:
+                lines.append('- 只有伪直播/贴片线路: %s' % '、'.join(
+                    '%s(%d条)' % (k, n) for k, n in pre_ch))
+        lines.append('')
+        lines.append('> 这些台不是"源坏了"，是原来那条线打开就要先看广告。'
+                     '想补回来只能加更干净的直播上游(见 sources.txt 的 L| 行)。')
+    lines += ['', '| 频道 | 分组 | 线路数 | 高清/备线 | 最佳画质 |',
+              '|---|---|---|---|---|']
     for c in channels:
         best = max(c['urls'], key=lambda u: u['w'] * u['h'])
-        if c.get('n_unver'):
+        # v13: 判断依据从"有没有未实测线"改成"最好的那条线是否实测过" ——
+        # 方案C 每台只深测前 2 条, 第 3 条备用线天生没有实测结果; 旧写法会让
+        # 几乎每一台都显示"未实测", 把实测到的画质数字直接盖掉。
+        if not best['w']:
             res = '未实测'
         elif best['h'] >= 2000:
             res = '4K'
@@ -2240,15 +2669,28 @@ def write_report(items, alive, suspect, deadlist, scored, channels,
             res = '%dp' % best['h']
         if best.get('kbps'):
             res += '/%dk' % best['kbps']
+        # v13: 浅探阶段"没轮到深探"的线只有 master 自报的分辨率(它可能虚标
+        # 1080p 实推 720p), 必须和 ffprobe 实测值区分开, 否则报告骗人
+        if best.get('method') == 'master':
+            res += '(声明)'
+        if c.get('n_unver') and best['w']:
+            res += ' (+%d条未实测)' % c['n_unver']
         hb = '%d/%d' % (c.get('n_hd', 0), c.get('n_backup', 0))
         lines.append('| %s | %s | %d | %s | %s |' % (
             c['name'], c['group'], len(c['urls']), hb, res))
     lines.append('')
     n_unver_ch = sum(1 for c in channels if c.get('n_unver'))
+    n_all_unver = sum(1 for c in channels
+                      if c.get('n_unver')
+                      and not any(u['w'] for u in c['urls']))
+    tail = ''
+    if n_all_unver:
+        tail += '；%d 个台整台无实测线(仅索引可达, 可能打不开)' % n_all_unver
+    if n_unver_ch - n_all_unver:
+        tail += '；%d 个台主线路已实测, 另有备用线只做了探活' % (
+            n_unver_ch - n_all_unver)
     lines.append('直播频道 %d 个 / 线路 %d 条%s' % (
-        len(channels), sum(len(c['urls']) for c in channels),
-        ('（其中 %d 个台无实测线, 收的是仅索引可达的兜底线路, 可能卡顿）'
-         % n_unver_ch) if n_unver_ch else ''))
+        len(channels), sum(len(c['urls']) for c in channels), tail))
     # v2: 直播上游健康表(上游挂了看得见, 手动补新上游有依据)
     lines += ['', '### 直播上游健康表', '',
                '| 状态 | 上游 | 命中白名单 | 总条数 | 备注 |',
@@ -2400,9 +2842,10 @@ def main():
             traceback.print_exc()
 
     # ---- 直播归集 + 实测 ----
+    ad_stats = {}
     try:
         wl = build_whitelist()
-        channels, up_stats = collect_live(wl)
+        channels, up_stats, ad_stats = collect_live(wl)
     except Exception as e:
         log('[阶段失败] 直播归集异常, 本轮不带直播: %s: %s' % (type(e).__name__, e))
         traceback.print_exc()
@@ -2468,12 +2911,13 @@ def main():
     # ---- v9: 熔断 —— 本轮结果腰斩就不覆盖产物 ----
     # 放在 save_deadlog 之前: 熔断说明本轮检测不可信, 不该把失败次数累加进去
     prev_api, prev_ch = load_prev_stats()
-    tripped, why = circuit_broken(prev_api, prev_ch, len(alive), len(channels))
+    tripped, why = circuit_broken(prev_api, prev_ch, len(alive), len(channels),
+                                  cand_ch=ad_stats.get('n_chan_cand'))
     if tripped:
         log('[熔断] %s' % why)
         log('       保留上一版 tvbox/store/live 不动, 本轮只更新 report')
         write_report(items, alive, suspect, deadlist, scored, channels,
-                     up_stats, now, trip=why)
+                     up_stats, now, trip=why, ad_stats=ad_stats)
         return
     save_deadlog(dead_apis, dead_stores)
     lives = write_live(channels)
@@ -2522,7 +2966,7 @@ def main():
     write_store(kept, os.environ.get('GITHUB_REPOSITORY', ''),
                 bool(channels), None, mine_sites=len(sites))
     write_report(items, alive, suspect, deadlist, scored, channels,
-                 up_stats, now)
+                 up_stats, now, ad_stats=ad_stats)
     log('report.md 已生成')
 
     if '--gitee' in sys.argv:
