@@ -54,3 +54,10 @@ L|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u | iptv-o
 L|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/hk.m3u | iptv-org香港
 L|https://raw.githubusercontent.com/suxuang/myIPTV/main/ipv4.m3u | suxuang合集
 L|https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/index.m3u | fanmingming主源
+# v17: 新增移动 IPTV 专池 —— 源全是 39.134.x/39.135.x 中国移动自有 IP,
+#      PLTV/88888888 标准平台路径, 0 条需鉴权(无 Authinfo, 不像 strong/live 那样会过期)。
+#      内容: 央视 18 + 卫视 24 + 湖南卫视 + 移动专区 78 = 124 条。
+#      为什么加它 —— 家里宽带是中国移动, 本网源最快、且运营商 IPTV 平台不带第三方贴片广告。
+#      注意: 境外检测机连不上移动内网 -> 大概率落 cn_blind 补位,
+#            真正排到第一条要等家里跑完 speedtest_live.py 生成 speed_rank.json
+L|https://gh-proxy.com/https://raw.githubusercontent.com/suxuang/myIPTV/main/%E7%A7%BB%E5%8A%A8IPTV.m3u | 移动IPTV专池
