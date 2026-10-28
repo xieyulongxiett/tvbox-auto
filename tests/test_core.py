@@ -1152,6 +1152,83 @@ def test_circuit_breaker_v14_ad_purge():
     assert cs.circuit_broken(100, 50, 70, 40)[0] is False
 
 
+# ---------------- v15: 归属地判据 ----------------
+
+def test_pick_ad_hosts_geo():
+    """v15 核心: 同样"一个IP扛6个台", 境外的判广告站, 大陆的不能判。
+    这是 v14 漏掉的关键 —— 中国移动的省网 IPTV 一台扛 20 多个台是标准部署,
+    不分归属一律砍, 等于把干净源和广告站一起枪毙。"""
+    hm = {'107.150.60.122': set('abcdefg'),      # 美国 Nocix, 扛 7 台
+          '39.134.115.163': set('abcdefg'),      # 中国移动, 扛 7 台
+          '1.2.3.4': {'a', 'b'},                 # 美国, 只扛 2 台
+          'cdn.example.com': set('abcdefghij')}  # 域名型, 扛 10 台
+    geo = {'107.150.60.122': 'US', '39.134.115.163': 'CN',
+           '1.2.3.4': 'US', 'cdn.example.com': 'DOMAIN'}
+    got = cs.pick_ad_hosts(hm, geo)
+    assert got == {'107.150.60.122'}, got     # 只砍境外高承载
+    # 大陆高承载必须豁免
+    assert '39.134.115.163' not in got
+    # 域名型不论扛多少都不砍(可能是省级 IPTV 平台)
+    assert 'cdn.example.com' not in got
+    # 扛得太少不砍
+    assert '1.2.3.4' not in got
+    # geo=None 时退化成 v14 行为, 保持旧行为可用
+    old = cs.pick_ad_hosts(hm)
+    assert old == {'107.150.60.122', '39.134.115.163'}, old
+
+
+def test_pick_ad_hosts_unknown_country():
+    """归属查不到('?')时按"非大陆"处理 —— 宁可在广告上保守,
+    因为一条广告线的代价是用户每次打开都等 30 秒, 而少一条线只是少一个备选。"""
+    hm = {'9.9.9.9': set('abcde')}
+    assert cs.pick_ad_hosts(hm, {'9.9.9.9': '?'}) == {'9.9.9.9'}
+    assert cs.pick_ad_hosts(hm, {}) == {'9.9.9.9'}
+
+
+def test_is_clean_src():
+    geo = {'39.134.115.163': 'CN', '107.150.60.122': 'US',
+           'hlsal-ldvt.qing.mgtv.com': 'DOMAIN', '1.2.3.4': '?'}
+    assert cs.is_clean_src('http://39.134.115.163/live/x.m3u8', geo) is True
+    assert cs.is_clean_src('http://107.150.60.122/live/x.m3u8', geo) is False
+    assert cs.is_clean_src('http://hlsal-ldvt.qing.mgtv.com/a.m3u8', geo) is True
+    assert cs.is_clean_src('http://1.2.3.4/x.m3u8', geo) is False
+    assert cs.is_clean_src('http://unknown.host/x.m3u8', geo) is False
+
+
+def test_annotate_geo_domain_no_network():
+    """域名型不该触发任何网络请求 —— 传纯域名进去必须秒回, 且不写缓存。"""
+    got = cs.annotate_geo({'a.example.com', 'b.example.com'})
+    assert got == {'a.example.com': 'DOMAIN', 'b.example.com': 'DOMAIN'}, got
+
+
+def test_cn_blind_fill():
+    """v15: 大陆盲源补位 —— 实测线不足 3 条时用盲源补, 有实测线时一条不挤。"""
+    def e(u, h, ms):
+        return {'url': u, 'w': 1920 if h else 0, 'h': h,
+                'method': 'ffmpeg', 'ms': ms}
+    blind = [{'url': 'http://cn1/x.m3u8', 'w': 0, 'h': 0,
+              'method': 'cn-blind', 'ms': 9999},
+             {'url': 'http://cn2/x.m3u8', 'w': 0, 'h': 0,
+              'method': 'cn-blind', 'ms': 9999},
+             {'url': 'http://cn3/x.m3u8', 'w': 0, 'h': 0,
+              'method': 'cn-blind', 'ms': 9999}]
+    # 一条实测线都没有 -> 盲源全用上(总比空着强)
+    urls, _ = cs.pick_live_urls([], [], list(blind))
+    assert len(urls) == 3, urls
+    assert all(x['method'] == 'cn-blind' for x in urls)
+    # 已有 2 条实测线 -> 只补 1 条, 不挤掉实测线
+    hd = [e('http://hd1.m3u8', 1080, 800)]
+    bk = [e('http://bk1.m3u8', 576, 900)]
+    urls, _ = cs.pick_live_urls(hd, bk, list(blind))
+    assert len(urls) == 3
+    assert urls[0]['url'] == 'http://hd1.m3u8'      # 实测高清仍在第一位
+    assert sum(1 for x in urls if x['method'] == 'cn-blind') == 1
+    # 实测线已满 3 条 -> 盲源一条都不进
+    urls, _ = cs.pick_live_urls([e('a', 1080, 1), e('b', 1080, 2),
+                                e('c', 1080, 3)], [], list(blind))
+    assert all(x['method'] != 'cn-blind' for x in urls)
+
+
 # ---------------- 独立运行 ----------------
 
 def _run_all():

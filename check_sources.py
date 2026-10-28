@@ -264,6 +264,36 @@ v14 (2026-10-28): 直播起播广告 —— 不是"删不掉", 是判据看错�
   ⑥ 测试 51 → 56 项(判据边界回归 / 裸IP识别 / 分发站判定 / 两次快照比对 /
      熔断区分主动剔除)
 
+v15 (2026-10-28): 按"机器在哪"分流 —— 治"干净源进不来"的根 -
+  用户在电视上实测: v14 之后广告照样很长(30 秒到几分钟), 不是 15 秒贴片。
+  查下去发现问题不在判据严不严, 而在**源池被广告站占满, 干净源一条进不来**:
+  ① 上游 Guovin 池 1616 条里, 那 5 台境外 VPS 占 153 条, 官方域名只有 5 条;
+  ② 干净的源其实是有的 —— iptv-org 的 cn.m3u 里 39.134.115.163(中国移动,
+     22 个台)、183.207.248.71(21 个台)、112.25.48.68(14 个台) 全是省网 IPTV,
+     一条广告没有;
+  ③ 但它们**全部被剔除了**: 检测跑在 GitHub 的境外机器上, 大陆运营商地址
+     连不上, 一律判死链。能连上的只有境外 VPS —— 于是"干净的进不来,
+     有广告的出不去", 台数越剔越少, 广告一条没少。
+  关键认识: "一个 IP 扛几十个台"本身分不出好坏。中国移动的省网 IPTV 一台
+  扛 22 个台是标准部署; 美国 Nocix 的 VPS 扛 30 个台才是卖线路的面板。
+  同一个数字, 两种结论, 唯一的区分依据是**这台机器在哪**。v14 不分归属
+  一律砍, 等于把干净源和广告站一起枪毙。
+  改动:
+  ① 新增 IP 归属查询 annotate_geo(): 只查裸 IP, 域名直接判 DOMAIN。
+     查询链 ipwho.is -> ipinfo.io, 失败记 '?' 且**不写缓存**(下轮重试,
+     免得一次抖动把干净 IP 永久钉成未知)。缓存落 ip_geo.json,
+     LIVE_GEO_TTL_DAYS=30 天有效, 随仓库提交, 第二轮起基本零请求;
+  ② pick_ad_hosts 加归属: 裸 IP 且扛>=5 台 且 **归属不是 CN** 才判广告站。
+     大陆运营商源豁免, 并在日志与 report 里单独列出"豁免了哪几个";
+  ③ 大陆盲源补位: 浅探失败时, 大陆/域名源不再直接丢, 而是收进 cn_blind。
+     出线实测线不足 LIVE_KEEP 时用它补(每台最多 LIVE_CN_BLIND_KEEP=3 条),
+     已有实测线时一条不挤。理由: 境外机器连不上大陆源是**地理问题**,
+     不是源坏了; 宁可给一条"可能不通但一定没广告"的线, 也不给一条
+     "一定通但先播 30 秒广告"的线 —— 不通还能切下一条, 广告只能干等;
+  ④ report「广告治理」升级: 增列"归属豁免"和"大陆盲源补位",
+     让用户看懂"为什么某个 IP 扛 22 个台却没被砍";
+  ⑤ 测试 56 → 61 项(归属判据 / 未知归属 / 干净源识别 / 盲源补位不挤实测线)
+
 用法:
   python check_sources.py [--sources 路径] [--gitee]
 """
@@ -296,6 +326,7 @@ LIVE_TXT = os.path.join(HERE, 'live.txt')
 REPORT = os.path.join(HERE, 'report.md')
 DEADLOG = os.path.join(HERE, 'dead_log.json')
 ADS_POOL = os.path.join(HERE, 'ads_pool.json')   # v10: 广告域名清单(供人工过目)
+GEO_CACHE = os.path.join(HERE, 'ip_geo.json')     # v15: IP归属缓存(跨轮复用)
 
 # ---- v7: 代理与 raw 域名集中定义 ----
 # 原来 gh-proxy.com 在 http_get / tv_url / norm_store_url / write_report 里
@@ -423,6 +454,18 @@ AD_URL_PATS = ('livekey=', 'streamid=', 'key=txiptv', 'authid=',
 # 故新增起播实测: 间隔 LIVE_START_GAP 秒抓两次索引, 真直播的 MEDIA-SEQUENCE
 # 必然前进; 不前进 / 出现 ENDLIST / PLAYLIST-TYPE:VOD = 循环垫片的伪直播。
 LIVE_AD_HOST_CH = 5     # 裸IP承载>=5个不同频道 -> 判广告分发站, 整站线路剔除
+# ---- v15: 归属地判据(治"干净源进不来") ----
+# v14 的判据是"裸 IP 且扛 >=5 台 -> 剔除", 方向对但不完整: 中国移动/联通/电信的
+# 省网 IPTV 源本来就是"一台服务器扛几十个台"(实测 39.134.115.163 扛 22 个、
+# 183.207.248.71 扛 21 个), 它们一条广告都没有, 却被一起判死。
+# 真正该看的是"这台机器在哪": 美国 Kansas City 的 Nocix、GTHost、WholeSale
+# 这类廉价 VPS 扛 30 个台 = 线路分发面板; 中国的运营商 IP 扛 30 个台 = 正常。
+# 更要命的是第二层: GitHub 的检测机器在境外, 国内运营商源全连不上, 被当死链丢光,
+# 结果清单里只剩境外广告站 —— 台数越剔越少, 广告一条没少。
+LIVE_GEO_TRUST = ('CN', 'DOMAIN')   # 大陆 IP 与域名型: 可免实测入清单
+LIVE_GEO_TTL_DAYS = 30              # 归属缓存有效期(天), 过期重查
+LIVE_GEO_MAX = 140                  # 单轮最多查多少个 host, 超出的沿用缓存/判未知
+LIVE_CN_BLIND_KEEP = 3              # 每台最多补几条"境外测不出"的大陆源
 LIVE_START_CHECK = 4    # 每台做"起播快照"的候选数(浅探后按快/高清排序取前N)
 LIVE_START_GAP = 6      # 两次快照间隔(秒); 全局只等这一轮, 不是每条各等一次
 # 静态贴片判据: 相对倍数为主, 绝对秒数只做下限(防 1~2 秒切片被倍数判据误伤)
@@ -1521,15 +1564,138 @@ def host_channel_map(pairs):
     return m
 
 
-def pick_ad_hosts(host_map, min_ch=None):
-    """v14: 从 host->频道集合 里挑出广告分发站。
-    判据: **裸 IP** 且 承载 >= LIVE_AD_HOST_CH 个不同频道。
-    为什么要"裸 IP"这一条: 域名型 host 承载多个台可能是正规 CDN
-    (省级 IPTV 平台、广电的公开 CDN 都是一域名多台), 误杀代价太高;
-    而裸 IP 扛几十个台几乎没有正当理由 —— 实测线上正是这三四个 IP 扛了 82 个台次。"""
+# ---------------- v15: IP 归属地 ----------------
+# 为什么必须查归属: "扛多少个台"本身分不出好人坏人。中国移动/联通的省网 IPTV
+# 一台扛 20 多个台是标准部署方式(实测 39.134.115.163 扛 22 个), 而美国 Nocix
+# 的 VPS 扛 30 个台就是卖线路的面板。同一个数字, 两种结论, 唯一的区分依据是
+# "这台机器在哪"。不查归属就只剩"见一个杀一个", 会把干净源一起杀光。
+def load_geo_cache():
+    """读归属缓存。结构 {host: {'cc': 'CN', 'ts': 1699999999}}"""
+    try:
+        with open(GEO_CACHE, encoding='utf-8') as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_geo_cache(cache):
+    try:
+        with open(GEO_CACHE, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, ensure_ascii=False, indent=0, sort_keys=True)
+    except Exception as e:
+        log('[归属缓存] 写入失败(不影响本轮): %s' % e)
+
+
+def geo_lookup(host):
+    """查一个 IP 的归属国代码。失败依次降级两个接口, 都失败返回 '?'。
+    只查裸 IP; 域名直接返回 'DOMAIN'(域名型另有判据, 不靠归属)。"""
+    if not is_bare_ip(host):
+        return 'DOMAIN'
+    try:
+        code, data = http_get('https://ipwho.is/%s' % host, 10)
+        j = json.loads(data.decode('utf-8', 'ignore'))
+        if isinstance(j, dict) and j.get('success') is not False:
+            cc = as_str(j.get('country_code'))
+            if cc:
+                return cc
+    except Exception:
+        pass
+    try:
+        code, data = http_get('https://ipinfo.io/%s/json' % host, 10)
+        j = json.loads(data.decode('utf-8', 'ignore'))
+        if isinstance(j, dict):
+            cc = as_str(j.get('country'))
+            if cc:
+                return cc
+    except Exception:
+        pass
+    return '?'
+
+
+def annotate_geo(hosts):
+    """给一批 host 打归属标记, 返回 {host: cc}。
+    带 30 天缓存: 每轮只查新出现的 IP, 老 IP 直接用上轮结果。
+    缓存落在 ip_geo.json 并随仓库提交, 所以第二轮起基本零请求。
+    查询失败记 '?' 但**不写缓存** —— 下轮还要重试, 免得一次网络抖动把某个
+    干净 IP 永久钉成未知。"""
+    cache = load_geo_cache()
+    now = int(time.time())
+    ttl = LIVE_GEO_TTL_DAYS * 86400
+    out = {}
+    todo = []
+    for h in hosts:
+        if not is_bare_ip(h):
+            out[h] = 'DOMAIN'
+            continue
+        rec = cache.get(h)
+        if isinstance(rec, dict) and rec.get('cc') and rec.get('cc') != '?':
+            if now - int(rec.get('ts') or 0) < ttl:
+                out[h] = rec['cc']
+                continue
+        todo.append(h)
+    todo.sort()
+    if len(todo) > LIVE_GEO_MAX:
+        log('[归属] 待查 %d 个, 本轮只查前 %d 个(其余沿用旧值/判未知)'
+            % (len(todo), LIVE_GEO_MAX))
+        todo = todo[:LIVE_GEO_MAX]
+    if todo:
+        log('[归属] 查询 %d 个新 host 的归属地...' % len(todo))
+        with ThreadPoolExecutor(min(8, MAX_WORKERS)) as ex:
+            futs = {ex.submit(geo_lookup, h): h for h in todo}
+            for fu in as_completed(futs):
+                h = futs[fu]
+                try:
+                    cc = fu.result()
+                except Exception:
+                    cc = '?'
+                out[h] = cc
+                if cc and cc != '?':
+                    cache[h] = {'cc': cc, 'ts': now}
+                time.sleep(0.05)
+        save_geo_cache(cache)
+    n_cn = sum(1 for c in out.values() if c == 'CN')
+    n_unk = sum(1 for c in out.values() if c == '?')
+    log('[归属] 大陆 %d / 域名 %d / 境外 %d / 未知 %d'
+        % (n_cn, sum(1 for c in out.values() if c == 'DOMAIN'),
+           len(out) - n_cn - n_unk - sum(1 for c in out.values()
+                                         if c == 'DOMAIN'), n_unk))
+    return out
+
+
+def is_clean_src(url, geo):
+    """v15: 这条线是否属于"可信任的干净源"(大陆 IP 或域名型)。
+    用于两个地方: ① 广告站判据里豁免大陆运营商源 ② 境外测不出时不判死。"""
+    try:
+        h = urllib.parse.urlsplit(url).hostname or ''
+    except Exception:
+        return False
+    return (geo or {}).get(h) in LIVE_GEO_TRUST
+
+
+def pick_ad_hosts(host_map, geo=None, min_ch=None):
+    """v15: 从 host->频道集合 里挑出广告分发站。
+    判据: **裸 IP** 且 承载 >= LIVE_AD_HOST_CH 个不同频道 且 **归属不是大陆**。
+
+    为什么必须加"归属"这一条（v14 漏掉的）:
+      只看"扛几个台"分不出好坏。中国移动/联通的省网 IPTV 源一台扛 20 多个台
+      是标准部署(实测 39.134.115.163 扛 22 个、183.207.248.71 扛 21 个),
+      一条广告都没有; 而美国 Nocix 的 VPS 扛 30 个台就是卖线路的面板。
+      v14 不分归属一律砍, 等于"连干净源一起枪毙", 越砍台越少、广告一条没少。
+
+    为什么仍要"裸 IP"这一条: 域名型 host 承载多个台可能是正规 CDN
+    (省级 IPTV 平台、广电公开 CDN 都是一域名多台), 误杀代价太高。
+
+    geo 为 None 时退化成 v14 行为(全砍), 保持旧测试与旧调用可用。"""
     lim = LIVE_AD_HOST_CH if min_ch is None else min_ch
-    return {h for h, chs in host_map.items()
-            if is_bare_ip(h) and len(chs) >= lim}
+    out = set()
+    for h, chs in host_map.items():
+        if not is_bare_ip(h) or len(chs) < lim:
+            continue
+        if (geo or {}).get(h) == 'CN':
+            continue          # 大陆运营商源: 扛多是常态, 不是广告站
+        out.add(h)
+    return out
 
 
 def snapshot_playlist(txt):
@@ -1791,7 +1957,20 @@ def collect_live(wl):
     # 代价(已与用户确认): 52 个台里约 31 个只有这类线路, 会被清空 —— 宁可少。
     pairs = [(k, u) for k, c in cands.items() for u in c['urls']]
     host_map = host_channel_map(pairs)
-    ad_hosts = pick_ad_hosts(host_map)
+    # v15: 先查归属。判"是不是广告站"不能只看"扛几个台" —— 大陆运营商的
+    # 省网 IPTV 一台扛 20 多个台是标准部署, 美国 Nocix 的 VPS 扛 30 个台
+    # 才是卖线路的面板。同一个数字, 两种结论, 唯一的区分依据是机器在哪。
+    geo = annotate_geo(set(host_map.keys()))
+    ad_hosts = pick_ad_hosts(host_map, geo)
+    # 被归属判据"救下来"的大陆高承载源 —— 必须报出来, 否则用户看不出
+    # "为什么这轮没把某个扛 20 台的 IP 砍掉"
+    saved_cn = sorted([(h, len(host_map[h])) for h in host_map
+                       if is_bare_ip(h) and len(host_map[h]) >= LIVE_AD_HOST_CH
+                       and geo.get(h) == 'CN'], key=lambda x: -x[1])
+    if saved_cn:
+        log('[归属豁免] %d 个大陆运营商源扛>=%d个台, 按"正常部署"保留: %s'
+            % (len(saved_cn), LIVE_AD_HOST_CH,
+               ', '.join('%s(%d台)' % (h, n) for h, n in saved_cn[:6])))
     ad_stats = {'hosts': [], 'dropped': [], 'n_line': 0,
                 # v14: 剔除前的候选台数 —— 熔断用它判"上游是不是挂了",
                 # 而不是用淘汰后的出线数(那会被主动剔除误判成腰斩)
@@ -1830,7 +2009,11 @@ def collect_live(wl):
                 for key, u, ua, raw, ref in tasks}
         for fu in as_completed(futs):
             key, u, raw, ua, ref = futs[fu]
-            probe_res[(key, u)] = {'r': fu.result(), 'raw': raw,
+            r = fu.result()
+            # v15: 标上"是不是大陆/域名源"。境外机器连不上大陆源是地理问题,
+            # 不是死链 —— 后面要靠这个标记把它们捡回来, 不白丢。
+            r['cn'] = is_clean_src(u, geo)
+            probe_res[(key, u)] = {'r': r, 'raw': raw,
                                    'ua': ua, 'ref': ref}
 
     # ---- v14: 起播实测(间隔抓两次索引, 判"伪直播/起播贴片") ----
@@ -1910,14 +2093,27 @@ def collect_live(wl):
 
     channels = []
     preroll_dropped = []    # v14: 因起播广告被清空的台
+    n_cn_blind = 0          # v15: 靠"大陆盲源"补位的线路总条数
+    cn_blind_chans = []     # v15: 只有靠盲源才出线的台(境外测不出, 需家里验证)
     for key, c in cands.items():
         hd = []        # v2: 高清层(>=720p) —— 主力线路
         backup = []    # v2: 备用层(>=540p) —— 换线保底, 有得换好过没得换
         unver = []     # v8: 索引合法但测不出分辨率(见下方说明)
+        cn_blind = []  # v15: 大陆/域名源, 境外机器连不上 —— 地理问题, 不是死链
         n_preroll = 0  # v14: 本台被起播实测剔掉的条数
         for (k2, u), d in probe_res.items():
             r, raw = d['r'], d['raw']
-            if k2 != key or not r['ok']:
+            if k2 != key:
+                continue
+            if not r['ok']:
+                # v15: 这一行是整轮的关键。以前浅探失败一律 continue, 而大陆
+                # 运营商源在 GitHub 的境外机器上必然失败 —— 于是央视那 19 个台
+                # 的干净源一条都进不来, 清单里只剩境外广告站。现在把大陆源
+                # 单独收起来, 出线不够时补位, 让"家里能看但境外测不出"的源
+                # 有机会出现在电视上。
+                if r.get('cn'):
+                    cn_blind.append({'url': u, 'w': 0, 'h': 0,
+                                     'method': 'cn-blind', 'ms': 9999})
                 continue
             # v14: 起播实测判为伪直播/贴片的线一律不收(用户拍板"宁少勿滥")
             if (k2, u) in preroll_flags:
@@ -1951,12 +2147,19 @@ def collect_live(wl):
         hd.sort(key=stab_key)
         backup.sort(key=stab_key)
         # v8: 兜底判定抽到 pick_live_urls(), 便于单测
-        urls, n_unver = pick_live_urls(hd, backup, unver)
+        # v15: 实测线不足 LIVE_KEEP 时, 用大陆盲源补位(最多 LIVE_CN_BLIND_KEEP)。
+        # 为什么允许补: 宁可给用户一条"可能不通但一定没广告"的线(不通就切下一条),
+        # 也不给他一条"一定通但先播 30 秒广告"的线。
+        fill = cn_blind[:LIVE_CN_BLIND_KEEP] if len(hd) + len(backup) < LIVE_KEEP else []
+        urls, n_unver = pick_live_urls(hd, backup, unver + fill)
+        n_cn_used = sum(1 for x in urls if x.get('method') == 'cn-blind')
+        if n_cn_used:
+            n_cn_blind += n_cn_used
+            cn_blind_chans.append(key)
         if n_unver:
             log('[直播兜底] %s 无实测线, 收 %d 条未实测(仅索引可达)'
                 % (key, n_unver))
         if not urls:
-            # v14: 分清"本来就没线"和"被起播广告清空" —— 后者要单独告诉用户
             if n_preroll:
                 preroll_dropped.append((key, n_preroll))
             continue
@@ -1965,7 +2168,7 @@ def collect_live(wl):
                          'urls': urls,
                          'n_cand': len(c['urls']),
                          'n_hd': len(hd), 'n_backup': len(backup),
-                         'n_unver': n_unver})
+                         'n_unver': n_unver, 'n_cn': n_cn_used})
 
     order = {g: i for i, g in enumerate(LIVE_GROUPS)}
     channels.sort(key=lambda c: (order.get(c['group'], 9), c['name']))
@@ -1975,6 +2178,13 @@ def collect_live(wl):
                ', '.join('%s(%d条)' % (k, n) for k, n in preroll_dropped)))
     ad_stats['preroll'] = preroll_flags
     ad_stats['preroll_dropped'] = preroll_dropped
+    ad_stats['cn_blind'] = n_cn_blind
+    ad_stats['cn_blind_chans'] = cn_blind_chans
+    ad_stats['saved_cn'] = saved_cn
+    ad_stats['geo'] = geo
+    if n_cn_blind:
+        log('[大陆盲源] 境外测不出、按"地理原因"保留 %d 条, 涉及 %d 个台: %s'
+            % (n_cn_blind, len(cn_blind_chans), ', '.join(cn_blind_chans[:10])))
     return channels, up_stats, ad_stats
 
 
@@ -2626,25 +2836,44 @@ def write_report(items, alive, suspect, deadlist, scored, channels,
         drop_ch = ad_stats.get('dropped') or []
         pre = ad_stats.get('preroll') or {}
         pre_ch = ad_stats.get('preroll_dropped') or []
-        lines += ['### 广告治理 (v14)', '']
+        lines += ['### 广告治理 (v15)', '']
+        lines.append('**① 广告分发站剔除**: %d 个**境外**裸IP单IP扛>=%d个台, '
+                     '共剔除 %d 条线路' % (
+                         len(hosts), LIVE_AD_HOST_CH,
+                         ad_stats.get('n_line', 0)))
         if hosts:
-            lines.append('**① 广告分发站剔除**: %d 个裸IP单IP扛>=%d个台, '
-                         '共剔除 %d 条线路' % (
-                             len(hosts), LIVE_AD_HOST_CH,
-                             ad_stats.get('n_line', 0)))
             lines += ['', '| 分发站IP | 承载频道数 |', '|---|---|']
             for h, n in hosts:
                 lines.append('| `%s` | %d |' % (h, n))
             lines.append('')
         else:
-            lines += ['**① 广告分发站剔除**: 本轮没发现(单IP扛<%d个台)'
-                      % LIVE_AD_HOST_CH, '']
-        lines.append('**② 起播实测**: 判为伪直播/贴片的线路 %d 条%s' % (
+            lines += ['', '本轮没发现(单IP扛<%d个台)' % LIVE_AD_HOST_CH, '']
+        # v15: 被归属判据救下来的大陆高承载源 —— 不报出来的话,
+        # 用户看到"某个 IP 扛 22 个台却没被砍"会以为程序漏了
+        saved = ad_stats.get('saved_cn') or []
+        if saved:
+            lines.append('**①-b 归属豁免**: %d 个**大陆**裸IP扛>=%d个台, '
+                         '按"运营商正常部署"保留(不算广告站): %s'
+                         % (len(saved), LIVE_AD_HOST_CH,
+                            '、'.join('`%s`(%d台)' % (h, n) for h, n in saved[:8])))
+            lines.append('')
+        cnb = ad_stats.get('cn_blind') or 0
+        cnb_ch = ad_stats.get('cn_blind_chans') or []
+        lines.append('**② 大陆盲源补位**: %d 条%s' % (
+            cnb,
+            ('（涉及 %d 个台: %s）' % (len(cnb_ch), '、'.join(cnb_ch[:10])))
+            if cnb_ch else ''))
+        lines.append('')
+        lines.append('> 这些线在 GitHub 的境外机器上连不上(地理原因, 不是死链), '
+                     '所以标"未实测"。它们在**你家的宽带上**很可能能播, '
+                     '而且没有起播广告 —— 播放器会自动在几条线之间切换。')
+        lines.append('')
+        lines.append('**③ 起播实测**: 判为伪直播/贴片的线路 %d 条%s' % (
             len(pre),
             ('（%s）' % ', '.join(sorted(set(pre.values()))[:3])) if pre else ''))
         if drop_ch or pre_ch:
             lines.append('')
-            lines.append('**③ 因"宁少勿滥"被清空的台**: %d 个' % (
+            lines.append('**④ 因"宁少勿滥"被清空的台**: %d 个' % (
                 len(drop_ch) + len(pre_ch)))
             if drop_ch:
                 lines.append('- 只有广告分发站线路: %s' % '、'.join(drop_ch))
