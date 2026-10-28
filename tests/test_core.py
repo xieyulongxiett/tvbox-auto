@@ -561,10 +561,13 @@ def test_epg_mapping():
 def test_live_m3u_tvg_attr():
     """v9: live.m3u 要带 tvg-id/tvg-name; 没有 EPG 的台不能硬写"""
     tmp = tempfile.mkdtemp()
-    old_m3u, old_json = cs.LIVE_M3U, cs.LIVE_JSON
+    old_m3u, old_json, old_txt = cs.LIVE_M3U, cs.LIVE_JSON, cs.LIVE_TXT
     try:
         cs.LIVE_M3U = os.path.join(tmp, 'live.m3u')
         cs.LIVE_JSON = os.path.join(tmp, 'live.json')
+        # v18: 原来漏了这个 —— write_live 会往包目录里真写一份 live.txt,
+        # 上传仓库时它会被一起带走(实测踩到过)
+        cs.LIVE_TXT = os.path.join(tmp, 'live.txt')
         chans = [
             {'name': 'CCTV-1 综合', 'group': '央视', 'epg': 'CCTV1',
              'urls': [{'url': 'http://a/1.m3u8'}], 'n_hd': 1, 'n_backup': 0,
@@ -580,7 +583,7 @@ def test_live_m3u_tvg_attr():
         assert 'tvg-' not in line, line
         assert 'x-tvg-url' in txt
     finally:
-        cs.LIVE_M3U, cs.LIVE_JSON = old_m3u, old_json
+        cs.LIVE_M3U, cs.LIVE_JSON, cs.LIVE_TXT = old_m3u, old_json, old_txt
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -1350,6 +1353,214 @@ def test_should_drop_by_speed():
     assert D(U('a'), {'a': cs.LIVE_SPEED_OK - 1}) is True
     # ⑥ 空线路
     assert D([], {'a': 0}) is False
+
+
+# ---------------- v18: 300 硬门槛 ----------------
+
+def test_filter_urls_by_speed():
+    """v18: 线路级门槛 —— 测过且够用才留; 测过不够用删; **没测过也删**。
+    和 v16 的整台判定不同, 这是逐条删: 电视只播第一条, 一条 87kbps 的线留在
+    清单里不是"备而不用", 是"点开就卡"。"""
+    F = cs.filter_urls_by_speed
+    U = lambda *xs: [{'url': x} for x in xs]
+    keep, drop = F(U('a', 'b', 'c'), {'a': 5000, 'b': 0})
+    assert [x['url'] for x in keep] == ['a'], keep
+    assert [d[0] for d in drop] == ['b', 'c'], drop    # c 没测过 -> 也删
+    assert drop[1][1] is None, drop                    # 没测过的 kbps 记 None
+    # 空测速表 -> 一条不删(是否启用由安全阀决定, 这里只负责算)
+    keep, drop = F(U('a', 'b'), {})
+    assert len(keep) == 2 and not drop
+    # 边界: 正好等于阈值算够用
+    assert len(F(U('a'), {'a': cs.LIVE_MIN_KBPS})[0]) == 1
+    assert not F(U('a'), {'a': cs.LIVE_MIN_KBPS - 1})[0]
+
+
+def test_apply_speed_gate_strict_and_valve():
+    """v18: 门槛裁决。够 5 个台才启用; 不够就退回 v17 行为(线路全留)。
+    这段逻辑一旦错, 要么把清单写成空文件, 要么门槛形同虚设 —— 必须有单测。"""
+    def mk(name, us):
+        return {'name': name, 'group': '央视',
+                'urls': [{'url': u} for u in us], 'slow': []}
+
+    # ① 只有 2 个台过门槛 -> 少于 LIVE_MIN_CHANNELS -> 安全阀
+    speed = {'a1': 5000, 'a2': 0, 'b1': 900, 'c1': 10}
+    chans = [mk('A', ['a1', 'a2']), mk('B', ['b1']), mk('C', ['c1'])]
+    for c in chans:
+        c['urls_ok'], c['slow'] = cs.filter_urls_by_speed(c['urls'], speed)
+    kept, mode, valve, dead, n_slow = cs.apply_speed_gate(chans, speed)
+    assert mode == 'off' and '只剩' in valve, (mode, valve)
+    # 退回老逻辑: A/B 留全(2+1 条), C 三条线都实测不过 -> 仍按 v16 删台
+    assert [c['name'] for c in kept] == ['A', 'B'], kept
+    assert sum(len(c['urls']) for c in kept) == 3, kept
+    assert dead and dead[0][0] == 'C', dead
+
+    # ② 6 个台过门槛 -> 启用; 没有线的台整台消失, 线路被裁到只剩够用的
+    speed2 = dict(('u%d' % i, 5000) for i in range(6))
+    speed2['z1'] = 0
+    chans = [mk('ch%d' % i, ['u%d' % i, 'z1']) for i in range(6)]
+    chans.append(mk('Z', ['z1']))
+    for c in chans:
+        c['urls_ok'], c['slow'] = cs.filter_urls_by_speed(c['urls'], speed2)
+    kept, mode, valve, dead, n_slow = cs.apply_speed_gate(chans, speed2)
+    assert mode == 'strict' and not valve, (mode, valve)
+    assert len(kept) == 6 and len(dead) == 1 and dead[0][0] == 'Z', (kept, dead)
+    assert all(len(c['urls']) == 1 for c in kept), kept
+    assert n_slow == 7, n_slow           # 6 个台的 z1 + Z 的那 1 条
+
+    # ③ 没有测速表 -> 安全阀, 一条线都不动
+    chans = [mk('A', ['a1', 'a2'])]
+    for c in chans:
+        c['urls_ok'], c['slow'] = cs.filter_urls_by_speed(c['urls'], {})
+    kept, mode, valve, dead, _ = cs.apply_speed_gate(chans, {})
+    assert mode == 'off' and '缺失' in valve, (mode, valve)
+    assert len(kept) == 1 and len(kept[0]['urls']) == 2
+
+
+def test_looks_inner_host():
+    """v18: 只认"只在校园网/运营商专网里通"的地址。家里实测那 36 条抽样
+    100% 超时, 全是这类 —— 不删, 只在候选排序里沉到最后。"""
+    assert cs.looks_inner_host('http://iptv.huuc.edu.cn/live/x.m3u8')
+    assert cs.looks_inner_host('http://ivi.bupt.edu.cn/x.m3u8')
+    assert cs.looks_inner_host('http://10.1.2.3/x.m3u8')
+    assert cs.looks_inner_host('http://192.168.1.5:8080/x.m3u8')
+    assert cs.looks_inner_host('http://112.27.235.94:8000/live/cctv1.m3u8')
+    assert cs.looks_inner_host('http://39.134.65.106/PLTV/88888888/x.m3u8')
+    # 正常公网源不能误判, 否则央视候选全被沉底
+    assert not cs.looks_inner_host(
+        'http://live.zohi.tv/video/s10001-fztv-3/index.m3u8')
+    assert not cs.looks_inner_host(
+        'https://bp-resource-dfl.bestv.cn/155/3/video.m3u8')
+    assert not cs.looks_inner_host('')
+
+
+def test_is_cctv():
+    assert cs.is_cctv('CCTV-1 综合')
+    assert cs.is_cctv('CCTV-4K 超高清')
+    assert not cs.is_cctv('湖南卫视')
+    assert not cs.is_cctv('凤凰卫视资讯台')
+    assert not cs.is_cctv('')
+
+
+def test_pick_candidates_pin_and_inner():
+    """v18: 候选三档优先。① 家里实测够用的线必须钉住(否则会被上游轮转淘汰,
+    清单自己缩没); ② 公网 host 先; ③ 内网/校园网 host 名额有剩才给。"""
+    urls = {'http://pin/x.m3u8': {'src': 'a'},
+            'http://www.ok.cn/a.m3u8': {'src': 'a'},
+            'http://iptv.huuc.edu.cn/b.m3u8': {'src': 'b'}}
+    speed = {'http://pin/x.m3u8': 6000}
+    picked = [u for u, _ in cs.pick_candidates(urls, 3, speed)]
+    assert picked[0] == 'http://pin/x.m3u8', picked
+    assert picked[1] == 'http://www.ok.cn/a.m3u8', picked
+    assert picked[2].endswith('b.m3u8'), picked
+    # 名额只有 1: 钉住的线优先, 轮不到内网
+    picked = [u for u, _ in cs.pick_candidates(urls, 1, speed)]
+    assert picked == ['http://pin/x.m3u8'], picked
+    # 名额 2: 公网先, 内网一条都不进
+    picked = [u for u, _ in cs.pick_candidates(urls, 2, speed)]
+    assert 'huuc.edu.cn' not in ''.join(picked), picked
+    # 没有测速表也要能正常取(全部走轮转)
+    picked = [u for u, _ in cs.pick_candidates(urls, 2, {})]
+    assert len(picked) == 2, picked
+
+
+def test_build_cand_pool():
+    """v18: 候选池(喂家里测速)。已知够用排前面复查, 没测过的补后面,
+    测过是死线的不再占名额(测了也是 0)。"""
+    speed = {'g1': 5000, 'g2': 900, 'd1': 0, 'd2': 120}
+    chosen = [{'url': 'g1'}, {'url': 'd1'}]
+    pool = [{'url': 'g1'}, {'url': 'g2'}, {'url': 'd1'}, {'url': 'd2'},
+            {'url': 'new1'}, {'url': 'new2'}, {'url': 'new3'},
+            {'url': 'new4'}, {'url': 'new5'}]
+    out = cs.build_cand_pool(chosen, pool, speed)
+    assert out[0] == 'g1', out                       # 已知够用的排最前
+    assert 'd1' not in out and 'd2' not in out, out   # 慢线/死线不占名额
+    assert out[1:3] == ['new1', 'new2'], out          # 没测过的按池顺序补
+    assert len(out) == cs.LIVE_CAND_KEEP, out         # 不超过上限
+    # 池里没有未测线时也不能空手: 已知够用的照样出
+    out = cs.build_cand_pool([{'url': 'g1'}], [{'url': 'g1'}], speed)
+    assert out == ['g1'], out
+    # 完全没有测速数据(第一次跑): 全部算未测
+    out = cs.build_cand_pool([{'url': 'x'}], [{'url': 'x'}, {'url': 'y'}], {})
+    assert out == ['x', 'y'], out
+
+
+def test_load_speed_rank_formats():
+    """v18: 兼容老格式(现线上那份 {url:kbps})与新格式(带 updated); 过期当没测过,
+    坏文件不崩。过期数据比没有更危险 —— 会把已死的老线当"实测够快"钉在第一位。"""
+    tmp = tempfile.mkdtemp()
+    old_here = cs.HERE
+    try:
+        cs.HERE = tmp
+        p = os.path.join(tmp, 'speed_rank.json')
+        now = cs.datetime.now(
+            cs.timezone(cs.timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
+        with open(p, 'w', encoding='utf-8') as f:
+            json.dump({'updated': now, 'rank': {'a': 5000}}, f)
+        assert cs.load_speed_rank() == {'a': 5000.0}
+        with open(p, 'w', encoding='utf-8') as f:
+            json.dump({'updated': '2020-01-01 00:00', 'rank': {'a': 5000}}, f)
+        assert cs.load_speed_rank() == {}
+        with open(p, 'w', encoding='utf-8') as f:   # 老格式照旧能读
+            json.dump({'a': 300, 'b': 0}, f)
+        assert cs.load_speed_rank() == {'a': 300.0, 'b': 0.0}
+        with open(p, 'w', encoding='utf-8') as f:
+            f.write('{oops')
+        assert cs.load_speed_rank() == {}
+        os.remove(p)
+        assert cs.load_speed_rank() == {}
+    finally:
+        cs.HERE = old_here
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_write_live_cand():
+    """v18: live_cand.txt 只在显式传入候选池时才写 —— 老调用方(单测/别的工具)
+    行为不变, 也避免在仓库根目录里凭空多一个文件。"""
+    tmp = tempfile.mkdtemp()
+    olds = (cs.LIVE_JSON, cs.LIVE_M3U, cs.LIVE_TXT, cs.LIVE_CAND_TXT)
+    try:
+        cs.LIVE_JSON = os.path.join(tmp, 'live.json')
+        cs.LIVE_M3U = os.path.join(tmp, 'live.m3u')
+        cs.LIVE_TXT = os.path.join(tmp, 'live.txt')
+        cs.LIVE_CAND_TXT = os.path.join(tmp, 'live_cand.txt')
+        chans = _channels()
+        cs.write_live(chans)                  # 不传 -> 不写候选池
+        assert not os.path.exists(cs.LIVE_CAND_TXT)
+        cand = [{'name': 'CCTV-1 综合', 'group': '央视',
+                 'urls': ['http://c/1.m3u8']},
+                {'name': '被删的台', 'group': '卫视',
+                 'urls': ['http://c/2.m3u8', 'http://c/3.m3u8']}]
+        cs.write_live(chans, cand)
+        t = open(cs.LIVE_CAND_TXT, encoding='utf-8').read()
+        assert '央视,#genre#' in t and '卫视,#genre#' in t, t
+        assert 'CCTV-1 综合,http://c/1.m3u8' in t, t
+        assert '被删的台,http://c/2.m3u8#http://c/3.m3u8' in t, t
+        # 候选池只写"测什么", 不能影响电视用的那份
+        assert 'http://c/1.m3u8' not in open(cs.LIVE_TXT,
+                                             encoding='utf-8').read()
+    finally:
+        (cs.LIVE_JSON, cs.LIVE_M3U, cs.LIVE_TXT, cs.LIVE_CAND_TXT) = olds
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_inject_pinned():
+    """v18: 家里实测够用的线必须进最终名单且排第一 —— 否则会出现"境外探到 3 条
+    高清线、家里的那条能播线被补位逻辑挤掉、剩下 3 条又全被 300 门槛删掉"的
+    连锁后果, 用户看到的就是"明明能看的台消失了"。"""
+    def e(u, h=1080):
+        return {'url': u, 'w': 1920, 'h': h, 'method': 'ffmpeg', 'ms': 500}
+    speed = {'home.m3u8': 4000, 'home2.m3u8': 5000}
+    pool = [e('oversea1'), e('oversea2'), e('oversea3'),
+            e('home.m3u8'), e('home2.m3u8')]
+    urls = [e('oversea1'), e('oversea2'), e('oversea3')]
+    out = cs.inject_pinned(urls, pool, speed)
+    # 快的排前面, 总数不超 LIVE_KEEP
+    assert [x['url'] for x in out] == ['home2.m3u8', 'home.m3u8',
+                                       'oversea1'], out
+    # 没有钉住的线时原样返回(顺序不能被打乱)
+    assert cs.inject_pinned(urls, [e('oversea1')], {}) == urls
+    # 空池也不能崩
+    assert cs.inject_pinned(urls, [], {'home.m3u8': 4000}) == urls
 
 
 def _run_all():
