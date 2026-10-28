@@ -15,21 +15,25 @@ VPS 沉底), 但静态特征只能猜。**只有在你家网络下真跑一遍, 
 
 怎么用
 ------
-    python tools/speedtest_live.py                    # 自动拉线上最新 live.txt
+    python tools/speedtest_live.py                    # 自动拉线上最新 live_cand.txt
     python tools/speedtest_live.py D:/live.txt        # 测本地文件
     python tools/speedtest_live.py -w 16              # 提高并发(网快时用)
 
+v18 注意: 默认拉的是 **live_cand.txt**(候选池), 不是 live.txt。
+因为 live.txt 从 v18 起只保留家里实测 >=300kbps 的台(那天算下来只剩 13 个台),
+测它等于只测已知的那几条线, 永远不会发现新台。候选池覆盖全部频道, 每台最多
+6 条(2 条已知够用的复查 + 4 条没测过的找新线)。
+
 产出(在当前目录)
-    speed_rank.json    每条线路实测速度 {url: kbps}
+    speed_rank.json    每条线路实测速度 {url: kbps}, 带 updated 时间戳
     live_sorted.txt    按你这里速度重排的 live.txt
     speed_report.md    逐台表格, 一眼看出哪些台够用、哪些台没救
 
 跑完之后
 --------
-把 speed_rank.json 提交到仓库根目录:
-    git add speed_rank.json && git commit -m "家里实测速度" && git push
-下一轮 Actions 会自动读它, 并以实测速度为最高优先级排序 —— 电视那边刷新配置
-即可生效, 不需要你手动改任何地址。
+把 speed_rank.json 覆盖到仓库根目录(网页 Upload files 即可):
+下一轮 Actions 只保留其中 >=300kbps 的线路, 电视那边刷新配置即可生效。
+超过 14 天不更新, 仓库那边会当作"没测过"并自动退回不过滤(安全阀)。
 
 判定口径
 --------
@@ -55,21 +59,41 @@ except Exception:
 UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                     'AppleWebKit/537.36 (KHTML, like Gecko) '
                     'Chrome/126.0.0.0 Safari/537.36'}
-REMOTE = 'https://raw.githubusercontent.com/xieyulongxiett/tvbox-auto/main/live.txt'
+REMOTE = ('https://raw.githubusercontent.com/xieyulongxiett/'
+          'tvbox-auto/main/live_cand.txt')
 MIRRORS = ('https://gh-proxy.com/https://raw.githubusercontent.com/'
-           'xieyulongxiett/tvbox-auto/main/live.txt',
+           'xieyulongxiett/tvbox-auto/main/live_cand.txt',
            'https://ghfast.top/https://raw.githubusercontent.com/'
-           'xieyulongxiett/tvbox-auto/main/live.txt')
+           'xieyulongxiett/tvbox-auto/main/live_cand.txt',
+           'https://raw.githubusercontent.com/xieyulongxiett/'
+           'tvbox-auto/main/live.txt')
 TIMEOUT = 8            # 单条线路最长等待(秒)
 MAX_BYTES = 1200000    # 单条最多下载字节(够测速即可, 1.2MB)
+MAX_TEXT = 400000      # 索引/播放列表最多读多少字节(v18 新增, 见 http_text)
 MIN_OK = 300           # kbps, 低于此值判"会卡"
 SMOOTH = 1500          # kbps, 高于此值判"流畅"
 
 
-def http_text(url, timeout=15):
+def http_text(url, timeout=15, max_bytes=MAX_TEXT):
+    """拉文本(播放列表/索引)。
+
+    v18: 加了字节与时长上限。老版本 `r.read()` 一把梭 —— 碰到 .flv/.ts/无后缀
+    直链时会把**整个视频文件**当文本读完再解码。2026-10-28 那次实测的账:
+    160 条用了 104 秒, 跑完 173 条却用了 1817 秒(最后 13 条耗了 28 分钟),
+    根因就在这一行。"""
     req = urllib.request.Request(url, headers=UA)
+    t0 = time.time()
+    buf, got = [], 0
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode('utf-8', 'ignore')
+        while got < max_bytes:
+            if time.time() - t0 > timeout:
+                break
+            b = r.read(65536)
+            if not b:
+                break
+            buf.append(b)
+            got += len(b)
+    return b''.join(buf).decode('utf-8', 'ignore')
 
 
 def download(url, timeout=TIMEOUT, max_bytes=MAX_BYTES):
@@ -113,8 +137,26 @@ def get_segments(url, depth=0):
     return split_m3u(txt, url)
 
 
+def is_hls(url):
+    """v18: 是不是 HLS 播放列表。flv/ts/mp4/无后缀直链不是 —— 以前一律当 m3u8
+    解析(把二进制当文本切行), 结果全判 0 分, 10-28 那批 173 条里有 28 条被冤枉。"""
+    low = url.lower().split('?')[0].split('#')[0]
+    return low.endswith('.m3u8') or low.endswith('.m3u')
+
+
 def measure(url):
     """测一条线路, 返回 (kbps, 备注)。"""
+    # v18: 非 HLS 直链直接按字节流测速(下载一小段算码率), 不再当播放列表解析
+    if not is_hls(url):
+        try:
+            got, el = download(url)
+            if got < 2000:
+                return 0.0, '样本过小(%dB)' % got
+            return round(got * 8 / 1000.0 / el, 1), 'ok(直链)'
+        except urllib.error.HTTPError as e:
+            return 0.0, 'HTTP %s' % e.code
+        except Exception as e:
+            return 0.0, type(e).__name__
     try:
         segs = get_segments(url)
     except Exception as e:
@@ -167,7 +209,7 @@ def load_live(path):
 def fetch_remote(outdir):
     for u in (REMOTE,) + MIRRORS:
         try:
-            print('拉取线上 live.txt: %s' % u)
+            print('拉取线上候选池 live_cand.txt: %s' % u)
             txt = http_text(u, 25)
             p = os.path.join(outdir, 'live_remote.txt')
             with open(p, 'w', encoding='utf-8') as f:
@@ -258,8 +300,16 @@ def main():
             f.write('%s,%s\n' % (n, '#'.join(us)))
     # ② speed_rank.json
     p2 = os.path.join(outdir, 'speed_rank.json')
+    # v18: 带时间戳。check_sources.py 读它会看 updated, 超过 14 天就当没测过 ——
+    # 300 硬门槛下, 过期数据比没有更危险: 会把已经死掉的老线当成"实测够快"
+    # 钉在清单第一位, 电视上就是那个台打不开。
+    now_s = time.strftime('%Y-%m-%d %H:%M', time.localtime())
     with open(p2, 'w', encoding='utf-8') as f:
-        json.dump({u: res[u][0] for u in res}, f, ensure_ascii=False, indent=0)
+        json.dump({'updated': now_s,
+                   'note': '家里实测: url -> kbps; check_sources.py 只收 >=%d 的线'
+                           % MIN_OK,
+                   'rank': {u: res[u][0] for u in res}},
+                  f, ensure_ascii=False, indent=0)
     # ③ speed_report.md
     p3 = os.path.join(outdir, 'speed_report.md')
     with open(p3, 'w', encoding='utf-8') as f:
@@ -285,8 +335,9 @@ def main():
     print('已写出: %s' % p1)
     print('         %s' % p2)
     print('         %s' % p3)
-    print('\n下一步: 把 speed_rank.json 提交到仓库根目录并推送,')
-    print('下一轮 Actions 会按你家里的实测速度排线路, 电视刷新即可。')
+    print('\n下一步: 把 speed_rank.json 覆盖到仓库根目录(网页 Upload files 即可),')
+    print('下一轮 Actions 只保留其中 >=%dkbps 的线路, 电视刷新即可生效。' % MIN_OK)
+    print('(超过 14 天不更新, 仓库那边会当作没测过, 自动退回"不过滤"的安全阀)')
     if bad:
         print('\n这些台三条线都不够用(%d 个): %s'
               % (len(bad), '、'.join(n for n, _ in bad[:12])))
