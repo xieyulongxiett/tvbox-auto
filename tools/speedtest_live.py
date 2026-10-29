@@ -13,11 +13,17 @@ check_sources.py 里已经加了静态亲和度兜底(国内 CDN 优先、移动
 VPS 沉底), 但静态特征只能猜。**只有在你家网络下真跑一遍, 才知道哪条线真快**。
 这个脚本就是干这个的。
 
-怎么用
+怎么用(最省事: 双击 speedtest.bat 就完事)
 ------
+    speedtest.bat                                     # 双击即可, 跑完自动打开上传页
     python tools/speedtest_live.py                    # 自动拉线上最新 live_cand.txt
     python tools/speedtest_live.py D:/live.txt        # 测本地文件
     python tools/speedtest_live.py -w 16              # 提高并发(网快时用)
+    python tools/speedtest_live.py -n                 # 跑完不要自动打开上传页
+
+v20: **不需要下载仓库**。脚本会自己从 raw.githubusercontent.com 拉线上最新的
+    live_cand.txt(候选池), 测完把 speed_rank.json 写在脚本旁边, 并自动开好
+    GitHub 上传页 —— 你只要把那个文件拖进去提交。全程三步: 双击 → 等 → 拖。
 
 v18 注意: 默认拉的是 **live_cand.txt**(候选池), 不是 live.txt。
 因为 live.txt 从 v18 起只保留家里实测 >=300kbps 的台(那天算下来只剩 13 个台),
@@ -72,6 +78,12 @@ MAX_BYTES = 1200000    # 单条最多下载字节(够测速即可, 1.2MB)
 MAX_TEXT = 400000      # 索引/播放列表最多读多少字节(v18 新增, 见 http_text)
 MIN_OK = 300           # kbps, 低于此值判"会卡"
 SMOOTH = 1500          # kbps, 高于此值判"流畅"
+# v20: 跑完自动打开这个页面, 用户直接把 speed_rank.json 拖进去就行。
+#   以前要在 GitHub 网页上找 Upload files 入口, 这一步最烦。
+REPO_UPLOAD = ('https://github.com/xieyulongxiett/tvbox-auto/'
+               'upload/main')
+# 必须与 check_sources.py 的 LIVE_RANK_TTL_DAYS 保持一致, 否则提示会骗人。
+RANK_TTL = 14          # 天, 超过就当没测过
 # v19: 持续测量窗口。只下 1 个分片时, 测到的是 TCP 慢启动那一两秒的突发
 #   峰值(看着很快); 但用户反馈的"能播、看着看着卡一下"来自晚高峰稳态带宽
 #   不足 —— 突发峰值对它毫无预测力。现在连续下 WARMUP+HOLD 秒, 丢掉前
@@ -315,6 +327,8 @@ def main():
     ap.add_argument('live', nargs='?', help='live.txt 路径; 不给则自动拉线上最新')
     ap.add_argument('-o', '--out', default='.', help='输出目录')
     ap.add_argument('-w', '--workers', type=int, default=12, help='并发数')
+    ap.add_argument('-n', '--no-open', action='store_true',
+                    help='跑完不要自动打开上传页')
     args = ap.parse_args()
 
     # 输出目录必须先建好: 拉线上 live.txt 时就要往这里落盘, 晚一步就是
@@ -415,12 +429,23 @@ def main():
     print('已写出: %s' % p1)
     print('         %s' % p2)
     print('         %s' % p3)
-    print('\n下一步: 把 speed_rank.json 覆盖到仓库根目录(网页 Upload files 即可),')
-    print('下一轮 Actions 只保留其中 >=%dkbps 的线路, 电视刷新即可生效。' % MIN_OK)
-    print('(超过 14 天不更新, 仓库那边会当作没测过, 自动退回"不过滤"的安全阀)')
+    # v20: 直接把绝对路径打出来, 并自动开好上传页 —— 以前用户要自己找文件
+    #   (不知道落在哪个目录)、自己找 GitHub 上传入口, 这两步最烦。
+    print('\n下一步: 把下面这个文件拖到已打开的上传页, 提交即可')
+    print('        %s' % os.path.abspath(p2))
+    print('下一轮 Actions 会把其中 >=%dkbps 的线路排到第一位。' % MIN_OK)
+    print('(超过 %d 天不更新, 仓库那边当作没测过, 自动退回不过滤的安全阀)'
+          % RANK_TTL)
     if bad:
         print('\n这些台三条线都不够用(%d 个): %s'
               % (len(bad), '、'.join(n for n, _ in bad[:12])))
+    if not args.no_open:
+        try:
+            import webbrowser
+            webbrowser.open(REPO_UPLOAD)
+            print('\n已打开上传页: %s' % REPO_UPLOAD)
+        except Exception:
+            pass
     return 0
 
 

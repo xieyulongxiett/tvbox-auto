@@ -54,12 +54,15 @@ D|https://raw.githubusercontent.com/laoma528/awesome-zhuiju-free/main/resources/
 # v5: 查证 Guovin gd 输出分支 2026-08-27 后停更(旧名单渐腐, 湖南台线路已死光),
 #     新增 vbskycn 活池(每日更新, 428频道)作补充; Guovin 保留(美国命硬线仍多)
 # v6: 候选改为按上游轮转取样 —— 顺序不再决定谁被实测, 上面两行谁先谁后都一样
-L|https://gh-proxy.com/https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u | Guovin大池
-L|https://gh-proxy.com/https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv4.m3u | vbskycn活池
-L|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u | iptv-org中国
-L|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/hk.m3u | iptv-org香港
-L|https://raw.githubusercontent.com/suxuang/myIPTV/main/ipv4.m3u | suxuang合集
-L|https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/index.m3u | fanmingming主源
+# v20: 电视端不要直播了, 整段直播上游停用(ENABLE_LIVE=False)。
+#   保留这些行是为了以后想加回来时不用重新找源 —— 恢复只需两步:
+#   ① 把下面 6 行前面的 '# ' 去掉  ② check_sources.py 里 ENABLE_LIVE 改回 True
+#L|https://gh-proxy.com/https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u | Guovin大池
+#L|https://gh-proxy.com/https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv4.m3u | vbskycn活池
+#L|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u | iptv-org中国
+#L|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/hk.m3u | iptv-org香港
+#L|https://raw.githubusercontent.com/suxuang/myIPTV/main/ipv4.m3u | suxuang合集
+#L|https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/index.m3u | fanmingming主源
 # ---- v18: 移动 IPTV 专池已注释掉(2026-10-28 家里移动宽带实测不可用) ----
 # 实测环境: 湖南长沙 中国移动宽带, 出口为移动公网 IP(非 IPTV 专网), 公网 80 正常
 # 实测结果: 抽 36 条(央视 18 + 卫视/专区 18) -> 100% 8 秒超时, 0 条出流

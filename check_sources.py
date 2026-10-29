@@ -382,12 +382,25 @@ FAIL_LIMIT = 2        # 接口连续失败次数达到该值才剔除
 STORE_MIN_HEALTH = 0.9   # 补位仓门槛: 90分(凑不齐完美仓时用它补位)
 STORE_PERFECT = 1.0      # v4: 完美仓线=100%(一票否决: 死1个地址整仓出局)
 STORE_FAIL_LIMIT = 1     # 一轮即踢(每轮从sources重新归集, 下轮达标自动回来)
-STORE_TOP_N = 5          # v19: 5个(用户 2026-10-29 拍板: 从3个放宽到5个)
+STORE_TOP_N = 8          # v20: 8个(v19 定的 5 个里有 3 个被多仓导航入口占掉,
+                         # 那 3 个入口本身 0/0 站点、子仓在家里拉不出 -> 实际只剩
+                         # 2 个能看。现在不收导航入口, 名额全给有内容的单仓。)
                          # 历史: v10 砍到2 -> 清单里只剩两个重依赖仓+一个空壳,
                          # 电视上 4 个源有 3 个打不开; v12 放宽到3(当时拍板"3个够了")
                          # 实测反馈(2026-10-29): 3 个名额里混进 1 个空壳仓,
                          # 实际只剩 2~3 个可看, 用户体感"还不如直接填网上多仓"
                          # —— 多仓之所以好用就是因为多, 名额必须够
+
+# ---- v20 总开关: 电视端不再要直播 ----
+# 用户 2026-10-29 拍板: "电视的直播的功能全部不要了"。
+# 关掉之后会跳过: 直播源归集、IP 归属查询、广告站/起播贴片判定、ffmpeg 画质实测、
+# 300kbps 速度门槛、live.txt / live.m3u / live.json / live_cand.txt 产物;
+# store.json 与 tvbox.json 的 lives 数组为空。
+#
+# 为什么是"开关"而不是"删代码": 直播那套判据(亲和度排序、广告指纹)是十几个版本
+# 迭代试出来的, 删掉就回不去了。留着开关, 哪天想加回来只需改这一个值。
+# 代价: check_sources.py 仍是 5000 行 —— 但它每天只在 GitHub 上跑, 不影响电视端。
+ENABLE_LIVE = False
 
 # ---- v19: 影视内容判据(治"接口连得上但没内容"的空壳仓) ----
 # 病根: 站点 api 有两种写法 ——
@@ -2013,6 +2026,16 @@ def load_speed_rank():
     out = {k: float(v) for k, v in rank.items()
            if isinstance(v, (int, float)) or
            (isinstance(v, str) and re.match(r'^\d+(\.\d+)?$', v.strip()))}
+    # v20: 老格式(纯 {url: kbps}, 没有 updated 字段)用**文件修改时间**兜底。
+    # 线上现在就是老格式, 它一旦没有时间戳, 上面的 TTL 判断会被整个跳过 ——
+    # 等于这份测速表永远不过期, 半年后还在拿它钉第一位。用 mtime 兜底不需要改
+    # 数据文件, 也能让过期机制对老格式生效。
+    if not updated:
+        try:
+            updated = time.strftime('%Y-%m-%d %H:%M',
+                                    time.localtime(os.path.getmtime(path)))
+        except Exception:
+            updated = ''
     if updated and LIVE_RANK_TTL_DAYS > 0:
         ts = None
         for fmt in ('%Y-%m-%d %H:%M', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M',
@@ -2045,7 +2068,12 @@ def should_drop_by_speed(urls, speed):
     if not speed or not urls:
         return False
     for x in urls:
-        if x.get('url') not in speed:
+        # v20: 0 kbps 一律当"没测过"。理由见 filter_urls_by_speed 的注释 ——
+        # 测通了但只有 87kbps 是"能连上但卡", 0 是"连都没连上", 后者说明不了
+        # 这条线对用户一定不可用(可能是当时超时/对端临时维护)。口径必须和
+        # filter_urls_by_speed 一致, 否则会出现"线留下了、整台却被删"的矛盾。
+        k = speed.get(x.get('url'))
+        if k is None or k <= 0:
             return False
     return all(speed[x['url']] < LIVE_SPEED_OK for x in urls)
 
@@ -2064,8 +2092,13 @@ def filter_urls_by_speed(urls, speed):
     keep, drop = [], []
     for x in urls:
         k = speed.get(x['url'])
-        if k is None:
-            drop.append((x['url'], None))
+        # v20 中间路线: 没测过 / 测不通(0) 的线**一律保留**, 只让实测够快的
+        # 靠 inject_pinned 顶到第一位。不再因为"没测过"就删线 ——
+        # 那正是 v18 把 58 台砍到 11 台的原因: 清单里 173 条线只有 18 条
+        # 做过家里实测, 其余 155 条全被当成"不够格"删掉, 台数跟着塌了。
+        # 现在只删"确实连通但太慢"的(0 < kbps < 门槛), 这类才真的会卡。
+        if k is None or k <= 0:
+            keep.append(x)
         elif k >= LIVE_MIN_KBPS:
             keep.append(x)
         else:
@@ -3307,41 +3340,17 @@ def write_store(scored, repo, live_ok, multi_entries=None, mine_sites=0,
     #   配置 JSON(没有 sites/urls 数组), 当"仓"加载本来就解析不出站点。
     #   直播请用仓库的 live.txt / live.m3u 地址单独填。
 
-    # ---- v19: 多仓导航入口收纳(用户 2026-10-29 拍板方案①) ----
-    #   GYCK.json 这类入口本身只有子仓地址、没有站点, 所以不打分;
-    #   但电视上点进去能展开全部子仓自己挑 —— 这正是"多仓好用"的原因。
-    #   收了入口之后, 被它覆盖的子仓不再单独收, 否则电视上会重复出现
-    #   (同一个仓既在导航里、又单独列一条)。
-    nav_covered = set()
-    for _nav_url, _subs in (nav_children or {}).items():
-        for _nm, _cu in (_subs or []):
-            try:
-                nav_covered.add(norm_store_url(as_str(_cu)))
-            except Exception:
-                pass
-    for s in scored:
-        if s.get('kind') != 'nav' or s.get('state') == '剔除':
-            continue
-        try:
-            _nu = norm_store_url(as_str(s.get('url')))
-        except Exception:
-            _nu = ''
-        if not _nu or _nu in nav_covered:
-            continue
-        nav_covered.add(_nu)
-        entries.append({'sourceName': as_str(s.get('name')) or '多仓导航',
-                        'sourceUrl': tv_url(as_str(s.get('url')))})
+    # ---- v20: 多仓导航入口不再收 ----
+    #   v19 曾经把 GYCK.json 这类入口收进来, 理由是"电视上点进去能展开子仓挑"。
+    #   实测打脸: 入口本身 0/0 站点, 子仓的可达性是**境外 runner** 测的 ——
+    #   报告里 46/46 存活, 到湖南移动宽带下一条都拉不出。结果是白占名额、
+    #   点进去一片死。所以这里直接不收, 名额全给有内容的单仓。
 
-    # ---- 候选池: 只收体检保留的真仓; 已被导航入口覆盖的子仓跳过 ----
+    # ---- 候选池: 只收体检保留的真仓 ----
     cands = []
     cut_gh = cut_empty = cut_vod = 0
     low_vod = []   # v19: 完全没有影视站点的仓, 只记名不淘汰
     for s in scored:
-        try:
-            if norm_store_url(as_str(s.get('url'))) in nav_covered:
-                continue   # 已由导航入口带进来, 不再单独收
-        except Exception:
-            pass
         if s.get('kind') == 'nav' or s.get('score') is None:
             continue
         if s.get('state') == '剔除':
@@ -3870,14 +3879,22 @@ def main():
             traceback.print_exc()
 
     # ---- 直播归集 + 实测 ----
+    # v20: ENABLE_LIVE=False -> 整段跳过(不归集、不实测、不出 live.* 产物)。
+    #   以前每轮要探活上百条线 + ffprobe 实测画质 + 查 IP 归属, 现在全省了。
     ad_stats = {}
-    try:
-        wl = build_whitelist()
-        channels, up_stats, ad_stats = collect_live(wl)
-    except Exception as e:
-        log('[阶段失败] 直播归集异常, 本轮不带直播: %s: %s' % (type(e).__name__, e))
-        traceback.print_exc()
-        channels, up_stats = [], []
+    channels, up_stats = [], []
+    if ENABLE_LIVE:
+        try:
+            wl = build_whitelist()
+            channels, up_stats, ad_stats = collect_live(wl)
+        except Exception as e:
+            log('[阶段失败] 直播归集异常, 本轮不带直播: %s: %s'
+                % (type(e).__name__, e))
+            traceback.print_exc()
+            channels, up_stats = [], []
+    else:
+        log('[直播] 总开关已关闭(ENABLE_LIVE=False), 本轮不检测直播、不生成 '
+            'live.txt / live.m3u / live.json / live_cand.txt')
     # 注意: live.json 不在这里写 —— 要先过熔断, 否则会先把好文件覆盖掉
 
     # ---- 失败计数(防误杀) ----
@@ -3939,6 +3956,11 @@ def main():
     # ---- v9: 熔断 —— 本轮结果腰斩就不覆盖产物 ----
     # 放在 save_deadlog 之前: 熔断说明本轮检测不可信, 不该把失败次数累加进去
     prev_api, prev_ch = load_prev_stats()
+    # v20: 直播关掉后 len(channels) 恒为 0。熔断的频道维度判据看到 0 会判成
+    #   "台数腰斩/全被剔干净" 从而触发熔断 —— 而熔断会**跳过写 tvbox/store**,
+    #   等于本次点播改动全部白改。所以这里把 prev_ch 清零, 让频道维度不参与。
+    if not ENABLE_LIVE:
+        prev_ch = 0
     tripped, why = circuit_broken(prev_api, prev_ch, len(alive), len(channels),
                                   cand_ch=ad_stats.get('n_chan_cand'))
     if tripped:
@@ -3948,7 +3970,9 @@ def main():
                      up_stats, now, trip=why, ad_stats=ad_stats)
         return
     save_deadlog(dead_apis, dead_stores)
-    lives = write_live(channels, ad_stats.get('cand_channels'))
+    lives = []
+    if ENABLE_LIVE and channels:
+        lives = write_live(channels, ad_stats.get('cand_channels'))
 
     # ---- 生成配置 ----
     # v10: 搜索可用的排前面 —— 截断到 MAX_SITES 时, 先被淘汰的是"能浏览但

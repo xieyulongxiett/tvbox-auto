@@ -447,14 +447,17 @@ def _scored():
 
 
 def test_write_store_selection():
-    """v19: 清单 = 多仓导航入口 + 最多 STORE_TOP_N(5) 个"点进去真能用"的仓
+    """v20: 清单 = 最多 STORE_TOP_N(8) 个"点进去真能用"的单仓
 
-    两处改动(用户 2026-10-29 拍板):
-      ① 去掉"我的直播" —— 点播和直播在电视上是**分开填的两个入口**,
+    三处改动:
+      ① v19 去掉"我的直播" —— 点播和直播在电视上是**分开填的两个入口**,
          把 live.txt 塞进点播清单不会被当直播读, 只是白占名额。
-      ② 名额 8 -> 5。v12 时是 3, 3 个里混进 1 个空壳就只剩 2 个能看,
+      ② v19 名额 3 -> 5。v12 时是 3, 3 个里混进 1 个空壳就只剩 2 个能看,
          用户体感"还不如直接填网上多仓" —— 多仓好用就是因为多。
-         定 5 而不是 8, 是用户自己在 5 和 8 之间选的。
+      ③ v20 名额 5 -> 8, 且**不再收多仓导航入口**。
+         实测打脸 v19 的方案①: 入口本身 0/0 站点, 子仓可达性由境外 runner
+         判定(报告 46/46 存活), 到湖南移动宽带下一条都拉不出 —— 5 个名额
+         里 3 个是这种空壳入口, 实际只剩 2 个能看。
     """
     tmp = tempfile.mkdtemp()
     old = cs.STORE
@@ -467,24 +470,23 @@ def test_write_store_selection():
         # v13: urls 格式(GYCK.json 同款), storeHouse 在影视仓上选不开
         assert 'urls' in cfg and 'storeHouse' not in cfg, list(cfg.keys())
         names = [e['name'] for e in cfg['urls']]
-        # v19: 多仓导航入口排第一(用户要求加进最终结果)
-        assert names[0] == '多仓导航', names
+        # v20: 多仓导航入口**不收** —— 它 0/0 站点, 子仓可达性由境外
+        #      runner 判定, 到湖南移动宽带下一条都拉不出, 纯占名额。
+        assert not any('多仓导航' in n for n in names), names
         # v19: "我的直播"不再出现 —— 直播是电视上单独填的入口
         assert not any('我的直播' in n for n in names), names
         assert '我的影视' not in names, 'tvbox.json 无站点时不该挂(红点废源)'
-        # 四个直连仓按 分数 > 站点数 排进去 (v19: 名额 8, 不再截断)
+        # 四个直连仓按 分数 > 站点数 排进去 (v20: 名额 8, 不再截断)
         assert '完美仓A 100分' in names, names
         assert '完美仓E 100分' in names, names
         assert '降分仓B 94分' in names, names
         assert '补位仓C 92分' in names, names
         assert '死仓D 50分' not in names, names
-        # v19: 导航入口**要**收(与旧版相反: 旧版把它排除在清单外)
-        assert any('多仓导航' in n for n in names), names
         # v12 核心断言: 99% GitHub 依赖的仓再高分也不能进
         assert all('转圈仓F' not in n for n in names), names
         assert sum(1 for n in names if '分' in n) == 4, names
-        # 导航入口排在点播仓之前
-        assert names[0] == '多仓导航', names
+        # v20: 第一个就是点播仓(没有导航入口占位)
+        assert '分' in names[0], names
     finally:
         cs.STORE = old
         shutil.rmtree(tmp, ignore_errors=True)
@@ -1349,12 +1351,16 @@ def test_should_drop_by_speed():
     让用户点进去跳台, 比没有这个台更糟。但判定必须保守, 不能误杀好台。"""
     D = cs.should_drop_by_speed
     U = lambda *xs: [{'url': x} for x in xs]
-    # ① 三条都测过、都不够用 -> 删
-    assert D(U('a', 'b', 'c'), {'a': 0, 'b': 120, 'c': 250}) is True
+    # ① 三条都测过(都>0)、都不够用 -> 删
+    assert D(U('a', 'b', 'c'), {'a': 100, 'b': 120, 'c': 250}) is True
     # ② 有一条能看 -> 不删
     assert D(U('a', 'b', 'c'), {'a': 0, 'b': 120, 'c': 900}) is False
     # ③ 有一条**没测过** -> 绝不删(数据不全, 不能下结论)
     assert D(U('a', 'b', 'c'), {'a': 0, 'b': 120}) is False
+    # ③b v20 中间路线: **全是 0(连不上)也不删台**。0 表示"没连上", 说明不了
+    #     这条线对用户一定不可用(可能当时超时/对端临时维护)。v18 把 0 当
+    #     "实测太慢"删掉, 正是台数从 58 塌到 11 的原因。
+    assert D(U('a', 'b', 'c'), {'a': 0, 'b': 0, 'c': 0}) is False
     # ④ 没测过速度(空表) -> 全部保留
     assert D(U('a', 'b'), {}) is False
     assert D(U('a', 'b'), None) is False
@@ -1368,21 +1374,28 @@ def test_should_drop_by_speed():
 # ---------------- v18: 300 硬门槛 ----------------
 
 def test_filter_urls_by_speed():
-    """v18: 线路级门槛 —— 测过且够用才留; 测过不够用删; **没测过也删**。
-    和 v16 的整台判定不同, 这是逐条删: 电视只播第一条, 一条 87kbps 的线留在
-    清单里不是"备而不用", 是"点开就卡"。"""
+    """v20 中间路线: **没测过 / 测不通(0) 的线一律保留**, 只删"确实连通但太慢"
+    的(0 < kbps < 门槛)。
+
+    为什么改: v18 把"没测过"也当不够格删掉, 而清单里 173 条线只有 18 条做过
+    家里实测 —— 剩下 155 条全被删, 台数从 58 塌到 11。现在只让实测够快的线
+    靠 inject_pinned 顶到第一位, 不再因为"没数据"就砍台。"""
     F = cs.filter_urls_by_speed
     U = lambda *xs: [{'url': x} for x in xs]
-    keep, drop = F(U('a', 'b', 'c'), {'a': 5000, 'b': 0})
-    assert [x['url'] for x in keep] == ['a'], keep
-    assert [d[0] for d in drop] == ['b', 'c'], drop    # c 没测过 -> 也删
-    assert drop[1][1] is None, drop                    # 没测过的 kbps 记 None
+    # a 实测够快 -> 留; b 连不上(0) -> 留; c 没测过 -> 留; d 连通但太慢 -> 删
+    keep, drop = F(U('a', 'b', 'c', 'd'), {'a': 5000, 'b': 0, 'd': 87})
+    assert [x['url'] for x in keep] == ['a', 'b', 'c'], keep
+    assert [d[0] for d in drop] == ['d'], drop
+    assert drop[0][1] == 87, drop
     # 空测速表 -> 一条不删(是否启用由安全阀决定, 这里只负责算)
     keep, drop = F(U('a', 'b'), {})
     assert len(keep) == 2 and not drop
     # 边界: 正好等于阈值算够用
     assert len(F(U('a'), {'a': cs.LIVE_MIN_KBPS})[0]) == 1
     assert not F(U('a'), {'a': cs.LIVE_MIN_KBPS - 1})[0]
+    # 边界: 0 必须留(它是"没连上",不是"连上了但慢")
+    assert len(F(U('a'), {'a': 0})[0]) == 1
+    assert len(F(U('a'), {'a': 0.0})[0]) == 1
 
 
 def test_apply_speed_gate_strict_and_valve():
@@ -1404,7 +1417,9 @@ def test_apply_speed_gate_strict_and_valve():
     assert sum(len(c['urls']) for c in kept) == 3, kept
     assert dead and dead[0][0] == 'C', dead
 
-    # ② 6 个台过门槛 -> 启用; 没有线的台整台消失, 线路被裁到只剩够用的
+    # ② 6 个台过门槛 -> 启用。
+    #    v20 中间路线: 连不上的线(0)保留, 所以 7 个台**全在**, 没有整台消失;
+    #    只有"确实连通但太慢"的线才被裁掉(本例没有, 故 n_slow=0)。
     speed2 = dict(('u%d' % i, 5000) for i in range(6))
     speed2['z1'] = 0
     chans = [mk('ch%d' % i, ['u%d' % i, 'z1']) for i in range(6)]
@@ -1413,9 +1428,10 @@ def test_apply_speed_gate_strict_and_valve():
         c['urls_ok'], c['slow'] = cs.filter_urls_by_speed(c['urls'], speed2)
     kept, mode, valve, dead, n_slow = cs.apply_speed_gate(chans, speed2)
     assert mode == 'strict' and not valve, (mode, valve)
-    assert len(kept) == 6 and len(dead) == 1 and dead[0][0] == 'Z', (kept, dead)
-    assert all(len(c['urls']) == 1 for c in kept), kept
-    assert n_slow == 7, n_slow           # 6 个台的 z1 + Z 的那 1 条
+    assert len(kept) == 7 and not dead, (kept, dead)
+    # ch0~ch5 各留 2 条(u_i 够用 + z1 连不上), Z 只有 1 条 -> 共 13 条
+    assert sum(len(c['urls']) for c in kept) == 13, kept
+    assert n_slow == 0, n_slow
 
     # ③ 没有测速表 -> 安全阀, 一条线都不动
     chans = [mk('A', ['a1', 'a2'])]
@@ -1521,6 +1537,42 @@ def test_load_speed_rank_formats():
     finally:
         cs.HERE = old_here
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_load_speed_rank_legacy_uses_mtime():
+    """v20: 老格式(纯 {url: kbps}, 没有 updated 字段)用**文件修改时间**判过期。
+
+    线上现在就是老格式: 它没有 updated, 上面的 TTL 判断会被整个跳过 ——
+    等于这份测速表永远不过期, 半年后还在拿它钉第一位。用 mtime 兜底不需要
+    改数据文件, 也能让过期机制对老格式生效。"""
+    tmp = tempfile.mkdtemp()
+    old_here = cs.HERE
+    try:
+        cs.HERE = tmp
+        p = os.path.join(tmp, 'speed_rank.json')
+        with open(p, 'w', encoding='utf-8') as f:
+            json.dump({'a': 5000}, f)
+        assert cs.load_speed_rank() == {'a': 5000.0}      # 刚写的 -> 没过期
+        past = cs.time.time() - (cs.LIVE_RANK_TTL_DAYS + 16) * 86400
+        os.utime(p, (past, past))                        # mtime 拨回 30 天前
+        assert cs.load_speed_rank() == {}, '老格式应当用 mtime 判过期'
+    finally:
+        cs.HERE = old_here
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_live_disabled_by_switch():
+    """v20 总开关: 电视端不要直播了。
+
+    为什么要有这条测试: ENABLE_LIVE 一旦被误改回 True, 每轮 Actions 会重新
+    去探活上百条直播线 + ffprobe 实测画质, 跑得慢不说, 还会重新生成 live.*
+    产物 —— 而用户已经明说了不要。留个断言, 改的人得先想清楚。
+
+    恢复直播需要同时做两件事(只改一处不生效):
+      ① 这里改回 True
+      ② sources.txt 里那 6 行 '#L|...' 去掉行首的 '# '
+    """
+    assert cs.ENABLE_LIVE is False, '直播总开关应关闭(用户 2026-10-29 拍板)'
 
 
 def test_write_live_cand():
@@ -1704,10 +1756,12 @@ def test_tv_url_adds_proxy_for_raw():
     assert cs.tv_url(plain) == plain, cs.tv_url(plain)
 
 
-def test_write_store_nav_entry_dedupes_children():
-    """v19 方案①: 收了多仓导航入口后, 被它覆盖的子仓不再单独收。
+def test_write_store_excludes_nav_entry():
+    """v20: 多仓导航入口**不进**电视清单。
 
-    否则电视上同一个仓会出现两次 —— 一次在导航里, 一次单独列一条。
+    v19 收过一次, 实测打脸: 入口本身 0/0 站点, 子仓的可达性是**境外 runner**
+    测的(报告里 46/46 存活), 到湖南移动宽带下一条都拉不出 —— 白占名额、
+    点进去一片死。所以这里必须断言它不出现, 防止以后有人再把导航收回来。
     """
     tmp = tempfile.mkdtemp()
     old = cs.STORE
@@ -1719,12 +1773,11 @@ def test_write_store_nav_entry_dedupes_children():
         cs.write_store(kept, 'owner/repo', True, [], nav_children=nav)
         cfg = json.load(open(cs.STORE, encoding='utf-8'))
         names = [e['name'] for e in cfg['urls']]
-        # 导航入口进清单
-        assert names[0] == '多仓导航', names
-        # 被覆盖的子仓不再单独出现(消除重复)
-        assert not any('完美仓A' in n for n in names), \
-            '子仓被导航覆盖后不该再单独收: %s' % names
-        # 未被覆盖的仓照常收进来
+        # 导航入口**不**进清单
+        assert not any('多仓导航' in n for n in names), names
+        # 它覆盖的子仓照常单独收(入口没了, 得靠子仓自己顶上)
+        assert any('完美仓A' in n for n in names), \
+            '不收导航入口后, 被覆盖的子仓必须照常进来: %s' % names
         assert any('完美仓E' in n for n in names), names
     finally:
         cs.STORE = old
