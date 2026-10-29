@@ -115,7 +115,7 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # -A 很重要：write_multi_files 会 rmtree 旧的 multi/，不加 -A 旧文件删不掉
+          # -A 很重要：产物里可能有被删掉的文件（如旧的 multi/），不加 -A 删不掉
           git add -A
           if git diff --cached --quiet; then
             echo "no changes"
