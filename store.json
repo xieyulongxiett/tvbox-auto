@@ -1,20 +1,12 @@
 {
   "urls": [
     {
-      "url": "https://ztha.top/TVBox/GYCK.json",
-      "name": "挺好分享多仓"
-    },
-    {
-      "url": "http://xhztv.top/dc",
-      "name": "小盒子多仓"
-    },
-    {
-      "url": "http://xmbjm.fh4u.org/dc.txt",
-      "name": "拾光多仓"
-    },
-    {
       "url": "https://6800.kstore.vip/fish.json",
       "name": "无名聚合 100分"
+    },
+    {
+      "url": "https://ztha.top/TVBox/thdjk.json",
+      "name": "📛挺好分享 100分"
     },
     {
       "url": "https://raw.liucn.cc/box/m.json",
@@ -23,6 +15,10 @@
     {
       "url": "https://9280.kstore.vip/newwex.json",
       "name": "王二小 100分"
+    },
+    {
+      "url": "https://szyyds.cn/tv/x.json",
+      "name": "🚀小马线路 98分·G6"
     }
   ]
 }
