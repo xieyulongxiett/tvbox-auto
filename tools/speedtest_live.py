@@ -72,6 +72,12 @@ MAX_BYTES = 1200000    # 单条最多下载字节(够测速即可, 1.2MB)
 MAX_TEXT = 400000      # 索引/播放列表最多读多少字节(v18 新增, 见 http_text)
 MIN_OK = 300           # kbps, 低于此值判"会卡"
 SMOOTH = 1500          # kbps, 高于此值判"流畅"
+# v19: 持续测量窗口。只下 1 个分片时, 测到的是 TCP 慢启动那一两秒的突发
+#   峰值(看着很快); 但用户反馈的"能播、看着看着卡一下"来自晚高峰稳态带宽
+#   不足 —— 突发峰值对它毫无预测力。现在连续下 WARMUP+HOLD 秒, 丢掉前
+#   WARMUP 秒的慢启动窗口, 只用后面 HOLD 秒算稳态速度。
+WARMUP_SEC = 3.0       # 丢弃的慢启动窗口(秒)
+HOLD_SEC = 15.0        # 稳态测量窗口(秒)
 
 
 def http_text(url, timeout=15, max_bytes=MAX_TEXT):
@@ -144,42 +150,116 @@ def is_hls(url):
     return low.endswith('.m3u8') or low.endswith('.m3u')
 
 
+def _finish(total, warm_bytes, t_warm, t0):
+    """把 (总字节, 慢启动截止字节, 慢启动截止时刻, 起始时刻) 换算成稳态 kbps。
+
+    v19: 只认 warmup 之后的窗口。流提前结束(点播/短分片)时退化成整体平均,
+      并在备注里标"短样本", 免得和真正的稳态测量混为一谈。
+    """
+    dur = max(0.05, time.time() - t0)
+    if t_warm is None:
+        if total < 2000:
+            return 0.0, total, '样本过小(%dB)' % total
+        return round(total * 8 / 1000.0 / dur, 1), total, '短样本(%.1fs)' % dur
+    dt = max(0.05, time.time() - t_warm)
+    got = total - warm_bytes
+    if got < 2000:
+        return 0.0, total, '稳态样本不足'
+    return round(got * 8 / 1000.0 / dt, 1), total, 'ok(稳态)'
+
+
+def sustained(url, warmup=WARMUP_SEC, hold=HOLD_SEC):
+    """v19: 直链持续下载 warmup+hold 秒, 丢掉前 warmup 秒后算稳态速度。"""
+    req = urllib.request.Request(url, headers=UA)
+    limit = warmup + hold
+    total = warm_bytes = 0
+    t_warm = None
+    t0 = time.time()
+    with urllib.request.urlopen(req, timeout=limit + 8) as r:
+        while True:
+            b = r.read(65536)
+            if not b:
+                break
+            total += len(b)
+            now = time.time()
+            if t_warm is None and now - t0 >= warmup:
+                t_warm = now
+                warm_bytes = total
+            if now - t0 >= limit:
+                break
+    return _finish(total, warm_bytes, t_warm, t0)
+
+
+def sustained_hls(url, warmup=WARMUP_SEC, hold=HOLD_SEC):
+    """v19: HLS 直播持续测量 —— 反复抓索引、连续下最新分片, 累计到 warmup+hold 秒。
+
+    旧做法只下 1 个分片(最多 1.2MB): 那测到的是 TCP 慢启动那一两秒的突发
+    峰值。数字很好看, 但对"看着看着卡一下"毫无预测力 —— 那种卡来自晚高峰
+    稳态带宽不足, 必须持续测量才暴露得出来。
+
+    直播索引是滚动的, 所以每轮重新抓一次拿新分片; 连续 3 轮索引没更新
+    (说明是点播/静态流)就停。
+    """
+    limit = warmup + hold
+    total = warm_bytes = 0
+    t_warm = None
+    seen = set()
+    idle = 0
+    t0 = time.time()
+    while time.time() - t0 < limit:
+        try:
+            segs = get_segments(url)
+        except Exception as e:
+            return 0.0, total, '索引失败 %s' % type(e).__name__
+        if not segs:
+            break
+        fresh = [s for s in segs[-3:] if s not in seen]
+        if not fresh:
+            idle += 1
+            if idle >= 3:
+                break
+            time.sleep(1.0)
+            continue
+        idle = 0
+        for s in fresh:
+            seen.add(s)
+            left = limit - (time.time() - t0)
+            try:
+                got, _ = download(s, timeout=max(4, left + 3))
+            except Exception:
+                got = 0
+            total += got
+            now = time.time()
+            if t_warm is None and now - t0 >= warmup:
+                t_warm = now
+                warm_bytes = total
+            if now - t0 >= limit:
+                break
+    return _finish(total, warm_bytes, t_warm, t0)
+
+
 def measure(url):
-    """测一条线路, 返回 (kbps, 备注)。"""
-    # v18: 非 HLS 直链直接按字节流测速(下载一小段算码率), 不再当播放列表解析
+    """测一条线路, 返回 (kbps, 备注)。
+
+    v19: 从"下 1 个分片算瞬时峰值"改成"连续下 18 秒取后 15 秒的稳态速度"。
+      这是用户反馈"能播、但看着看着卡一下"的直接对策。
+    """
+    # v18: 非 HLS 直链按字节流测速, 不再当播放列表解析
     if not is_hls(url):
         try:
-            got, el = download(url)
-            if got < 2000:
-                return 0.0, '样本过小(%dB)' % got
-            return round(got * 8 / 1000.0 / el, 1), 'ok(直链)'
+            kb, tot, note = sustained(url)
         except urllib.error.HTTPError as e:
             return 0.0, 'HTTP %s' % e.code
         except Exception as e:
             return 0.0, type(e).__name__
+        return kb, ('ok(直链稳态)' if kb > 0 else note)
     try:
-        segs = get_segments(url)
+        kb, tot, note = sustained_hls(url)
+    except urllib.error.HTTPError as e:
+        return 0.0, 'HTTP %s' % e.code
     except Exception as e:
-        return 0.0, '索引失败 %s' % type(e).__name__
-    if not segs:
-        return 0.0, '无分片'
-    # 直播取最新一片(末尾), 前面的可能已被滑窗清掉; 取不到再退回第一片
-    cands = [segs[-1]]
-    if len(segs) > 1:
-        cands.append(segs[0])
-    last = ''
-    for s in cands:
-        try:
-            got, el = download(s)
-            if got < 2000:
-                last = '分片过小(%dB)' % got
-                continue
-            return round(got * 8 / 1000.0 / el, 1), 'ok'
-        except urllib.error.HTTPError as e:
-            last = 'HTTP %s' % e.code
-        except Exception as e:
-            last = type(e).__name__
-    return 0.0, last or '失败'
+        return 0.0, type(e).__name__
+    return kb, ('ok(稳态)' if kb > 0 else note)
 
 
 def load_live(path):
@@ -255,7 +335,7 @@ def main():
 
     rows = load_live(src)
     jobs = [(g, n, u) for g, n, us in rows for u in us]
-    print('共 %d 个台 / %d 条线路, 并发 %d, 预计 1~3 分钟'
+    print('共 %d 个台 / %d 条线路, 并发 %d, 预计 4~8 分钟'
           % (len(rows), len(jobs), args.workers))
     print('测的是**你当前这台机器的网络** —— 要在家里宽带下跑才有意义。\n')
 

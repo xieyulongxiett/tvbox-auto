@@ -447,8 +447,15 @@ def _scored():
 
 
 def test_write_store_selection():
-    """v12: 清单 = 我的直播 + 最多3个"点进去真能用"的仓
-    与 v10 的差别: 我的影视只在有站点时挂; 通道太差的仓一票否决"""
+    """v19: 清单 = 多仓导航入口 + 最多 STORE_TOP_N(5) 个"点进去真能用"的仓
+
+    两处改动(用户 2026-10-29 拍板):
+      ① 去掉"我的直播" —— 点播和直播在电视上是**分开填的两个入口**,
+         把 live.txt 塞进点播清单不会被当直播读, 只是白占名额。
+      ② 名额 8 -> 5。v12 时是 3, 3 个里混进 1 个空壳就只剩 2 个能看,
+         用户体感"还不如直接填网上多仓" —— 多仓好用就是因为多。
+         定 5 而不是 8, 是用户自己在 5 和 8 之间选的。
+    """
     tmp = tempfile.mkdtemp()
     old = cs.STORE
     try:
@@ -460,21 +467,24 @@ def test_write_store_selection():
         # v13: urls 格式(GYCK.json 同款), storeHouse 在影视仓上选不开
         assert 'urls' in cfg and 'storeHouse' not in cfg, list(cfg.keys())
         names = [e['name'] for e in cfg['urls']]
-        assert names[0] == '我的直播', names
+        # v19: 多仓导航入口排第一(用户要求加进最终结果)
+        assert names[0] == '多仓导航', names
+        # v19: "我的直播"不再出现 —— 直播是电视上单独填的入口
+        assert not any('我的直播' in n for n in names), names
         assert '我的影视' not in names, 'tvbox.json 无站点时不该挂(红点废源)'
-        # 三个直连仓按 分数 > 站点数 排进去
+        # 四个直连仓按 分数 > 站点数 排进去 (v19: 名额 8, 不再截断)
         assert '完美仓A 100分' in names, names
         assert '完美仓E 100分' in names, names
         assert '降分仓B 94分' in names, names
-        # 第4个直连仓被 STORE_TOP_N=3 截断
-        assert '补位仓C 92分' not in names, names
+        assert '补位仓C 92分' in names, names
         assert '死仓D 50分' not in names, names
-        assert all('多仓导航' not in n for n in names)
+        # v19: 导航入口**要**收(与旧版相反: 旧版把它排除在清单外)
+        assert any('多仓导航' in n for n in names), names
         # v12 核心断言: 99% GitHub 依赖的仓再高分也不能进
         assert all('转圈仓F' not in n for n in names), names
-        assert sum(1 for n in names if '分' in n) == 3, names
-        # 电视端地址必须带代理前缀(裸 raw 在盒子上拉不动)
-        assert cfg['urls'][0]['url'].startswith(cs.GH_PROXY)
+        assert sum(1 for n in names if '分' in n) == 4, names
+        # 导航入口排在点播仓之前
+        assert names[0] == '多仓导航', names
     finally:
         cs.STORE = old
         shutil.rmtree(tmp, ignore_errors=True)
@@ -1561,6 +1571,164 @@ def test_inject_pinned():
     assert cs.inject_pinned(urls, [e('oversea1')], {}) == urls
     # 空池也不能崩
     assert cs.inject_pinned(urls, [], {'home.m3u8': 4000}) == urls
+
+
+def test_is_verifiable_site():
+    """v19: api 是真实 URL 的站点才谈得上"真验证内容" """
+    # 真实 URL 接口 -> 能发请求验证有没有影片
+    assert cs.is_verifiable_site(
+        {'api': 'https://a.com/api.php/provide/vod/'})
+    # ext 里带 URL 也算可验证
+    assert cs.is_verifiable_site({'api': '', 'ext': 'https://b.com/x.json'})
+    # jar 内部标识符 / 外挂脚本 -> 验证不了内容
+    assert not cs.is_verifiable_site({'api': 'csp_Douban'})
+    assert not cs.is_verifiable_site({'api': 'py_xxx'})
+    assert not cs.is_verifiable_site({'api': './lib/drpy2.min.js'})
+    assert not cs.is_verifiable_site({'api': ''})
+    assert not cs.is_verifiable_site({})
+    # 非 dict 不能崩
+    assert not cs.is_verifiable_site('字符串站点')
+    assert not cs.is_verifiable_site(None)
+
+
+def test_fetch_json_tolerates_trailing_html():
+    """v19: 配置尾部附加 HTML 的仓(Extra data)要能救回来, 不能整仓判死"""
+    import unittest.mock as mock
+    good = {'sites': [{'key': 'a', 'name': '影视A', 'api': 'csp_A'}]}
+
+    def fake_get(url, timeout, max_bytes=None, headers=None):
+        body = json.dumps(good, ensure_ascii=False)
+        return 200, (body + '<script>var a=1;</script>'
+                     '<html><body>备案信息</body></html>').encode('utf-8')
+
+    old = cs.http_get
+    try:
+        cs.http_get = fake_get
+        got = cs.fetch_json('http://x/dc.txt', 8)
+        assert got == good, got
+    finally:
+        cs.http_get = old
+
+
+def test_write_store_rejects_content_shell():
+    """v19 B方案: 影视站点占比 < STORE_MIN_VOD(25%) 的仓直接不收.
+
+    判据选型过程: 先试过"站点名猜影视站", 肥猫仍有 41% 漏网; 再试
+    "可验证站点数<3", 结果把挺好分享一起误杀了(两者 csp_ 比例几乎
+    相同: 38/39 vs 45/46)。最后用**占比**才分开 —— 实测候选分成
+    两簇、中间是空档:
+        好仓 30%~51%  无名聚合/小马/挺好分享/饭太硬/老刘备/王二小/Lightconer
+        空壳  9%~21%  肥猫/小盒子单仓
+    阈值取 25% 落在空档上, 两边各留约 9 个百分点的余量, 站点名
+    改动几个字也不会跨线。
+    """
+    tmp = tempfile.mkdtemp()
+    old = cs.STORE
+    try:
+        cs.STORE = os.path.join(tmp, 'store.json')
+        kept = [s for s in _scored() if s['state'] != '剔除']
+        # 完美仓A: 0 个影视站点(全是配置/网盘/课堂), 模拟肥猫
+        for s in kept:
+            if s['name'] == '完美仓A':
+                s['vod_n'] = 0
+                s['vod_ratio'] = 0.0
+                s['ver_n'] = 1
+                s['ver_ratio'] = 0.02
+            elif s['name'] == '完美仓E':
+                s['vod_n'] = 8
+                s['vod_ratio'] = 1.0
+                s['ver_n'] = 8
+                s['ver_ratio'] = 1.0
+        cs.write_store(kept, 'owner/repo', True, [])
+        cfg = json.load(open(cs.STORE, encoding='utf-8'))
+        names = [e['name'] for e in cfg['urls']]
+        # 空壳仓(影视占比 0%)被硬门槛踢掉, 不再只是"排后面"
+        assert not any('完美仓A' in n for n in names), '空壳应被踢: %s' % names
+        # 有真影视内容的仓保留
+        assert any('完美仓E' in n for n in names), names
+        # vod_ratio 缺失的仓不因这条被淘汰(判不出来就不杀)
+        assert any('降分仓B' in n for n in names), names
+    finally:
+        cs.STORE = old
+
+
+def test_is_vod_like_site():
+    """v19: 按站点名用途判"像不像影视点播站" """
+    # 播放类正向词
+    for nm in ('🔆光影┃不卡', '🍓糯米┃秒播', '📺热播┃多线',
+                '🥇金牌┃影视', '🦉咕咕┃动漫', '🧲新6V┃磁力'):
+        assert cs.is_vod_like_site({'name': nm}), nm
+    # 非影视排除词
+    for nm in ('🎮游戏┃直播', '⚽八八┃看球', '🐾酷狗┃音乐',
+                '🐼┃配置┃中心', '📚小学┃课堂'):
+        assert not cs.is_vod_like_site({'name': nm}), nm
+    # 排除词优先于正向词: 同时含"影视"和"直播"按非影视算
+    assert not cs.is_vod_like_site({'name': '游戏影视直播'}), '排除词应优先'
+    # 空 / 异常输入不能崩
+    assert not cs.is_vod_like_site({})
+    assert not cs.is_vod_like_site('字符串')
+    assert not cs.is_vod_like_site(None)
+
+
+def test_fetch_json_tolerates_image_disguise():
+    """v19: 图片伪装的 Base64 配置要能解开
+
+    实测依据: 饭太硬 www.饭太硬.net/tv 返回的是 JPEG(魔数 ffd8),
+    真正的配置是尾部附加的 base64 文本。解不开就整仓判死。
+    """
+    import base64 as _b64
+    cfg = {'sites': [{'key': 'csp_Test', 'name': '测试影视站', 'type': 3}]}
+    payload = _b64.b64encode(json.dumps(cfg).encode('utf-8')).decode()
+    fake_jpeg = b'\xff\xd8\xff\xe0' + b'\x00' * 32 + b'\xff\xd9'
+    data = fake_jpeg + ('zz**' + payload).encode()
+
+    class _R:
+        status = 200
+        def read(self):
+            return data
+    orig = cs.http_get
+    try:
+        cs.http_get = lambda u, t: (200, data)
+        got = cs.fetch_json('http://x/tv', 5)
+        assert got['sites'][0]['key'] == 'csp_Test', got
+    finally:
+        cs.http_get = orig
+
+
+def test_tv_url_adds_proxy_for_raw():
+    """v19: raw.githubusercontent.com 的地址进清单时必须带代理前缀 ——
+    裸 raw 在电视盒子上基本拉不动。非 raw 域名(ztha.top 等)原样返回。"""
+    u = 'https://%s/owner/repo/main/live.txt' % cs.RAW_HOST
+    assert cs.tv_url(u).startswith(cs.GH_PROXY), cs.tv_url(u)
+    plain = 'http://ztha.top/TVBox/GYCK.json'
+    assert cs.tv_url(plain) == plain, cs.tv_url(plain)
+
+
+def test_write_store_nav_entry_dedupes_children():
+    """v19 方案①: 收了多仓导航入口后, 被它覆盖的子仓不再单独收。
+
+    否则电视上同一个仓会出现两次 —— 一次在导航里, 一次单独列一条。
+    """
+    tmp = tempfile.mkdtemp()
+    old = cs.STORE
+    try:
+        cs.STORE = os.path.join(tmp, 'store.json')
+        kept = [s for s in _scored() if s['state'] != '剔除']
+        # 导航入口 s0/nav.json 覆盖 完美仓A(s1/a.json)
+        nav = {'http://s0/nav.json': [('完美仓A', 'http://s1/a.json')]}
+        cs.write_store(kept, 'owner/repo', True, [], nav_children=nav)
+        cfg = json.load(open(cs.STORE, encoding='utf-8'))
+        names = [e['name'] for e in cfg['urls']]
+        # 导航入口进清单
+        assert names[0] == '多仓导航', names
+        # 被覆盖的子仓不再单独出现(消除重复)
+        assert not any('完美仓A' in n for n in names), \
+            '子仓被导航覆盖后不该再单独收: %s' % names
+        # 未被覆盖的仓照常收进来
+        assert any('完美仓E' in n for n in names), names
+    finally:
+        cs.STORE = old
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _run_all():

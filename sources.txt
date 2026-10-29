@@ -34,11 +34,17 @@
 @https://ztha.top/TVBox/GYCK.json | 挺好分享多仓
 @https://6800.kstore.vip/fish.json | 无名聚合
 @https://raw.githubusercontent.com/qist/tvbox/master/0821.json | qist大而全
+# v19 新增: 516 站点大池, GitHub系子资源仅 2%, spider 落在国内 CDN
+@https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/%E5%8D%95%E4%BB%93%E8%81%9A%E5%90%88.json | Lightconer单仓聚合
 
-# 以下三个 2026-10-27 实测拉不通, 暂时注释掉(留着备查, 通了再放开):
-# @http://xhztv.top/dc | 小盒子多仓            ← 证书 SNI 不匹配
-# @http://xhztv.top/4k.json | 小盒子4K          ← 同上
-# @http://www.饭太硬.net/tv | 饭太硬             ← 中文域名, 连接失败
+# v19 新增(2026-10-29 实测可用):
+@http://www.饭太硬.net/tv | 饭太硬
+@http://xhztv.top/xhz | 小盒子单仓
+@http://xhztv.top/4k.json | 小盒子4K
+@https://9280.kstore.vip/newwex.json | 王二小
+
+# 2026-10-27 曾因证书 SNI 不匹配注释掉, 2026-10-29 复测仍不通, 保持注释:
+# @http://xhztv.top/dc | 小盒子多仓
 
 # 目录仓: 自动发现新点播仓(13405 star, 每日自动检测126个资源)
 D|https://raw.githubusercontent.com/laoma528/awesome-zhuiju-free/main/resources/resources.json | 追剧目录仓

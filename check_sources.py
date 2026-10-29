@@ -382,9 +382,53 @@ FAIL_LIMIT = 2        # 接口连续失败次数达到该值才剔除
 STORE_MIN_HEALTH = 0.9   # 补位仓门槛: 90分(凑不齐完美仓时用它补位)
 STORE_PERFECT = 1.0      # v4: 完美仓线=100%(一票否决: 死1个地址整仓出局)
 STORE_FAIL_LIMIT = 1     # 一轮即踢(每轮从sources重新归集, 下轮达标自动回来)
-STORE_TOP_N = 3          # v12: 外部点播仓留3个(用户实测拍板"3个就够了, 但必须能看")
-                         # v10 曾砍到2, 结果清单里只剩两个重依赖仓 + 一个空壳,
-                         # 电视上 4 个源有 3 个打不开 —— 少不等于精, 能看才算
+STORE_TOP_N = 5          # v19: 5个(用户 2026-10-29 拍板: 从3个放宽到5个)
+                         # 历史: v10 砍到2 -> 清单里只剩两个重依赖仓+一个空壳,
+                         # 电视上 4 个源有 3 个打不开; v12 放宽到3(当时拍板"3个够了")
+                         # 实测反馈(2026-10-29): 3 个名额里混进 1 个空壳仓,
+                         # 实际只剩 2~3 个可看, 用户体感"还不如直接填网上多仓"
+                         # —— 多仓之所以好用就是因为多, 名额必须够
+
+# ---- v19: 影视内容判据(治"接口连得上但没内容"的空壳仓) ----
+# 病根: 站点 api 有两种写法 ——
+#   ① 真实 URL 接口(苹果CMS等): 体检能真发请求验证有没有影片
+#   ② csp_Xxx / py_Xxx / ./lib/*.js: 只是 jar 内部标识符或外挂脚本,
+#      体检器发不出请求, 只能验证 jar 能不能下载。
+#
+# ⚠️ 走过的弯路(别再退回去): 一度用"② 类站点有几个"当硬门槛判空壳 ——
+#   实测肥猫 39 站里 38 个是 csp_、挺好分享 46 站里 45 个是 csp_,
+#   两者数值几乎一样, 但用户体感是"肥猫没内容、挺好分享好用"。
+#   原因: csp_ 站点靠 TVBox 的 jar 解析, 内容是真的, 只是我们
+#   **没有 spider 引擎所以验证不了** —— "验证不了" != "没内容"。
+#   拿它当硬门槛会把好仓一起误杀(挺好分享就被误杀过)。
+#
+# 现在的做法: 用**站点名用途**判(配置文本里写死, 100% 可判定),
+#   而且只当**排序键、不当硬门槛** —— 判据不可能完美, 判错最多是
+#   排位靠后, 不会把仓杀掉。
+#
+# 实测区分度(2026-10-29): 肥猫 8/39(21%) 疑似影视,
+#   挺好分享 21/46(46%) —— 后者自然排前面。
+#
+# ver_n / ver_ratio 仍然统计, 但只进报告供参考, 不再用来淘汰。
+STORE_MIN_VER_N = 0      # 0 = 不做硬门槛(历史值 3, 会误杀好仓, 已废弃)
+#
+# 但"影视占比"要当硬门槛用 —— 因为它能把空壳精确分开:
+#   实测(2026-10-29) 全部候选落在两个簇里, 中间是空档:
+#     好仓: 无名聚合51% 小马48% 挺好分享46% 饭太硬41% 老刘备40%
+#           王二小34% Lightconer34% 小盒子4K30%
+#     空壳: 肥猫21%  小盒子单仓9%
+#   -> 阈值取 25% 正好落在 21% 和 30% 之间, 两边各有 9 个百分点的余量,
+#      即使某个仓的站点名改了几个字, 也不会跨过这条线。
+STORE_MIN_VOD = 0.25     # 影视站点占比下限: 低于此值不入选(空壳仓)
+# 影视站正向词(命中即计内容量)
+VOD_POS_KW = ('影视', '电影', '剧场', '剧圈', '追剧', '荐片', '不卡', '秒播',
+            '多线', '热播', '预告', '4k', '2k', '4K', '2K', '高清', '磁力',
+            '动漫', '番', '立播', '玩偶')
+# 非影视排除词(命中即不计内容量, 优先级高于正向词)
+VOD_NEG_KW = ('直播', '看球', '球', '音乐', '酷狗', 'MV', 'mv', '有声',
+              '小说', '急救', '教学', '启蒙', '教育', '课堂', '配置',
+              '公告', '豆瓣', '群', '推送', 'APP', 'app', 'App', '频道',
+              '云盘', '网盘', '盘搜', '盘她', '盘他', '手机')
 
 # ---- v12: 子资源通道门槛(纯文本判定, 零网络请求) ----
 # 病根: 仓"能不能加载"和"点进去能不能用"是两件事。配置 json 通常几十KB,
@@ -773,15 +817,32 @@ def fetch_json(url, timeout):
             except Exception:
                 pass
     txt = data.decode('utf-8-sig', 'ignore')
+    # v19: strict=False —— 有些仓的 JSON 字符串里嵌了裸控制字符(如 \x00~\x1f),
+    #   默认 strict=True 会直接报 "Invalid control character" 而整仓判死。
+    #   实测 4k.json(line 657 col 142) 就栽在这。控制字符对解析结果无影响,
+    #   放开即可; 空白字符(CR/LF/TAB)在下一步统一清掉, 不会破坏结构。
     try:
-        return json.loads(txt)
+        return json.loads(txt, strict=False)
     except Exception:
         pass
     # TVBox圈常用宽松JSON: 带//或/* */注释、字符串内换行等, 剥离后再解析
+    #   //////////  整行斜杠当分隔线的注释也一并吃掉(4k.json line 54)
     stripped = re.sub(r'^\s*//.*$', '', txt, flags=re.M)
     stripped = re.sub(r'/\*.*?\*/', '', stripped, flags=re.S)
     stripped = stripped.replace('\r', '').replace('\n', ' ').replace('\t', ' ')
-    return json.loads(stripped)
+    try:
+        return json.loads(stripped, strict=False)
+    except Exception:
+        pass
+    # v19: 尾部附加 HTML 的仓(如某多仓 dc.txt 结尾跟一段 <script>/网页),
+    #   json.loads 会报 "Extra data"。真正的配置在前面, 用 raw_decode
+    #   从头解出一个完整 JSON 就够, 尾部的垃圾直接丢掉 —— 不这样就整仓
+    #   判死, 54 条子仓跟着一起没。
+    head = stripped.lstrip()
+    if head[:1] in ('{', '['):
+        obj, _ = json.JSONDecoder(strict=False).raw_decode(head)
+        return obj
+    raise RuntimeError('配置无法解析: %s' % url[:80])
 
 
 # ---- v10: 广告域名采集 ----
@@ -1011,21 +1072,68 @@ def vod_has_ads(play_url):
 
 def deep_check_cms_vod(api_url):
     """CMS深测升级: 验证有真实内容 + 抽真实视频测广告.
-    返回 (有内容, 无广告); 广告无法判定时按无广告处理"""
+    返回 (有内容, 无广告); 广告无法判定时按无广告处理
+
+    v19: 三重空壳判据 —— ① 有影片条目 ② 条目里能取出播放地址 ③ 无广告。
+      旧判据是 `has_cls or vods`, 于是"只返回分类、一部影片都没有"的接口
+      也算活, 空壳仓因此拿到 100 分。
+    """
     try:
         has_cls, vods = cms_query(api_url)
     except Exception:
         return False, True
-    if not (has_cls or vods):
-        return False, True   # 没内容
-    # 抽前几个视频测广告
-    for v in vods[:3]:
+    cand = []
+    for v in vods[:5]:
         u = first_play_url(v)
-        if not u:
-            continue
+        if u:
+            cand.append(u)
+    if not cand:
+        # 没影片, 或有条目但取不出播放地址 —— 都是空壳
+        return False, True
+    # 抽前几个视频测广告
+    for u in cand[:3]:
         if vod_has_ads(u) is True:
             return True, False  # 有内容但插广告
     return True, True
+
+
+def is_verifiable_site(s):
+    """v19: 这个站点的内容能不能被真验证(而不是只看 jar 在不在).
+
+    判据只有一个: api 是不是真实 URL。
+      - 是 -> 体检能发请求, 能验证有没有影片条目、取不取得出播放地址
+      - 不是(csp_Xxx / py_Xxx / ./lib/*.js), 只是 jar 内部标识符或外挂
+        脚本, 体检器发不出请求, 这个站点的"存活"其实只代表 jar 能下载
+
+    为什么不用站点名字判断: 实测过, 肥猫 39 个站点里仍有 16 个(41%)
+    名字不含"配置/直播/APP/网盘"等排除词, 照样混进清单。名字不可靠。
+    """
+    if not isinstance(s, dict):
+        return False
+    if as_str(s.get('api')).startswith('http'):
+        return True
+    ext = s.get('ext')
+    return isinstance(ext, str) and ext.startswith('http')
+
+
+def is_vod_like_site(s):
+    """v19: 这个站点看起来是不是"影视点播"站(按站点名用途判).
+
+    为什么不用 api 是不是 URL 判: 见上方常量区的"走过的弯路"。
+    肥猫(空壳)和挺好分享(好用)的 csp_ 站点比例几乎一样,
+    但前者的站点是 B站/网盘/短剧APP/豆瓣/配置中心/课堂,
+    后者是"不卡/秒播/多线/荐片/4K"这类真播放站 ——
+    差别只在**站点用途**, 而用途就写在名字里。
+
+    排除词优先于正向词: 名字里同时有"影视"和"直播"的,
+    按非影视算(如"游戏直播"不会被"影视"误收)。
+    """
+    if not isinstance(s, dict):
+        return False
+    txt = '%s %s' % (as_str(s.get('name')), as_str(s.get('key')))
+    if any(k in txt for k in VOD_NEG_KW):
+        return False
+    return any(k in txt for k in VOD_POS_KW)
 
 
 def site_deps(cfg, base_url=''):
@@ -1342,9 +1450,18 @@ def assess_stores(stores):
                 score = max(0.0, score - REC_QUALITY_PENALTY / 2)
                 rec_note = '海报挂率%d%%' % int(rec_bad * 100)
         jar_ok = dep_ok.get(gjar) if gjar else None
+        # v19: 可验证性 —— 有多少站点是能真发请求验证内容的(见 STORE_MIN_VER)
+        ver_n = sum(1 for e in per if is_verifiable_site(e['site']))
+        ver_ratio = (ver_n / total) if total else 0.0
+        # v19: 影视内容量 —— 名字像"影视/不卡/秒播/多线"的站点有几个。
+        #   只参与排序, 不做硬门槛(判据不完美, 判错最多排后面, 不会误杀)
+        vod_n = sum(1 for e in per if is_vod_like_site(e['site']))
+        vod_ratio = (vod_n / total) if total else 0.0
         out.append(dict(st, kind=kind, score=score, alive=alive_cnt,
                         total=total, unknown=unknown, deep=deep,
                         ad_hits=ad_hits, jar_ok=jar_ok,
+                        ver_n=ver_n, ver_ratio=ver_ratio,
+                        vod_n=vod_n, vod_ratio=vod_ratio,
                         quality_h=q_hit if q_hit is not None else '',
                         rec_note=rec_note or q_note))
         pct = ('%d%%' % (score * 100)) if score is not None else '入口'
@@ -3158,7 +3275,8 @@ def is_perfect_store(s):
     return total >= BIG_STORE_SITES and (total - alive) <= BIG_STORE_TOLERANCE
 
 
-def write_store(scored, repo, live_ok, multi_entries=None, mine_sites=0):
+def write_store(scored, repo, live_ok, multi_entries=None, mine_sites=0,
+                nav_children=None):
     """v12: 电视点播清单 = 我的直播 + 最多 STORE_TOP_N 个"点进去真能用"的仓
 
     与 v10 的根本差别: 入选标准从"站点存活数"换成"子资源通道".
@@ -3182,16 +3300,48 @@ def write_store(scored, repo, live_ok, multi_entries=None, mine_sites=0):
                         'sourceUrl': tv_url(mine)})
     elif repo:
         log('我的影视: tvbox.json 站点数为 0, 不挂进清单(挂了就是电视上一个红点)')
-    if repo and live_ok:
-        # v12: 指向 live.txt —— live.json(OSC) 在影视仓 V5.0.31 上不认
-        own = 'https://%s/%s/main/live.txt' % (RAW_HOST, repo)
-        entries.append({'sourceName': '我的直播',
-                        'sourceUrl': tv_url(own)})
+    # v19: 「我的直播」不再挂进点播清单(用户 2026-10-29 拍板)。
+    #   理由(用户原话): 点播和直播地址在电视上是**分开填的两个入口**,
+    #   把 live.txt 塞进 store.json 根本不会被当直播读, 只是白占一个名额。
+    #   而且 live.txt 是 `央视,#genre#` 的 txt 直播源格式, 不是 TVBox 的
+    #   配置 JSON(没有 sites/urls 数组), 当"仓"加载本来就解析不出站点。
+    #   直播请用仓库的 live.txt / live.m3u 地址单独填。
 
-    # ---- 候选池: 只收体检保留的真仓; 导航入口不参与(子仓已独立参选) ----
-    cands = []
-    cut_gh = cut_empty = 0
+    # ---- v19: 多仓导航入口收纳(用户 2026-10-29 拍板方案①) ----
+    #   GYCK.json 这类入口本身只有子仓地址、没有站点, 所以不打分;
+    #   但电视上点进去能展开全部子仓自己挑 —— 这正是"多仓好用"的原因。
+    #   收了入口之后, 被它覆盖的子仓不再单独收, 否则电视上会重复出现
+    #   (同一个仓既在导航里、又单独列一条)。
+    nav_covered = set()
+    for _nav_url, _subs in (nav_children or {}).items():
+        for _nm, _cu in (_subs or []):
+            try:
+                nav_covered.add(norm_store_url(as_str(_cu)))
+            except Exception:
+                pass
     for s in scored:
+        if s.get('kind') != 'nav' or s.get('state') == '剔除':
+            continue
+        try:
+            _nu = norm_store_url(as_str(s.get('url')))
+        except Exception:
+            _nu = ''
+        if not _nu or _nu in nav_covered:
+            continue
+        nav_covered.add(_nu)
+        entries.append({'sourceName': as_str(s.get('name')) or '多仓导航',
+                        'sourceUrl': tv_url(as_str(s.get('url')))})
+
+    # ---- 候选池: 只收体检保留的真仓; 已被导航入口覆盖的子仓跳过 ----
+    cands = []
+    cut_gh = cut_empty = cut_vod = 0
+    low_vod = []   # v19: 完全没有影视站点的仓, 只记名不淘汰
+    for s in scored:
+        try:
+            if norm_store_url(as_str(s.get('url'))) in nav_covered:
+                continue   # 已由导航入口带进来, 不再单独收
+        except Exception:
+            pass
         if s.get('kind') == 'nav' or s.get('score') is None:
             continue
         if s.get('state') == '剔除':
@@ -3209,10 +3359,31 @@ def write_store(scored, repo, live_ok, multi_entries=None, mine_sites=0):
                     s.get('res_total') or 0, round(gh * 100),
                     round(STORE_GH_MAX * 100)))
             continue
+        # v19: 影视内容量 —— 只记录、只排序, 不淘汰。
+        #   这里曾经是硬门槛(可验证站点 < 3 就踢), 实测把「挺好分享」误杀了:
+        #   它 46 站里 45 个是 csp_, 靠 jar 解析在电视上确实能播,
+        #   而肥猫同样是 38/39 个 csp_, 内容却是网盘/直播/课堂/配置中心。
+        #   两者数值分不开 -> 硬门槛必然误伤, 改成排序键后判错只影响排位。
+        if (s.get('vod_n') or 0) == 0:
+            low_vod.append(as_str(s.get('name'))[:20])
+        # v19: 影视占比硬门槛 —— 站点大半是配置/直播/网盘/APP聚合的仓,
+        #   接口虽然连得上, 电视上却什么也点不出来(肥猫就是典型)。
+        #   注意 vod_ratio 为 None(没统计到)时**不淘汰**: 判不出来就不杀,
+        #   它排序按 0 算, 自然会排在有真内容的仓后面。
+        vr = s.get('vod_ratio')
+        if vr is not None and vr < STORE_MIN_VOD:
+            cut_vod += 1
+            log('[空壳淘汰] %s: 疑似影视站点仅 %d%% < 下限%d%%, '
+                '挂上去就是电视上几个红点, 不收' % (
+                    as_str(s.get('name'))[:20], round(vr * 100),
+                    round(STORE_MIN_VOD * 100)))
+            continue
         cands.append({'s': s, 'gh': gh,
                       'score': s.get('score') or 0,
                       'total': s.get('sites_n') or 0,
                       'jar': s.get('jar_rate') or 0,
+                      'ver': s.get('ver_ratio') or 0.0,
+                      'vod': s.get('vod_ratio') or 0.0,
                       # v9 的大仓容错继续沿用: >=30站的仓允许死1个仍算完美
                       'perfect': is_perfect_store(s)})
 
@@ -3232,13 +3403,20 @@ def write_store(scored, repo, live_ok, multi_entries=None, mine_sites=0):
                               'score': s.get('score') or 0,
                               'total': s.get('sites_n') or 0,
                               'jar': s.get('jar_rate') or 0,
+                              'ver': s.get('ver_ratio') or 0.0,
+                              'vod': s.get('vod_ratio') or 0.0,
+                      'vod': s.get('vod_ratio') or 0.0,
                               'perfect': is_perfect_store(s)})
 
-    # 直连优先 > 完美仓 > 组内(v9: 完美看内容量, 其余看分数) > jar率
+    # 直连优先 > 内容量占比 > 完美仓 > 组内(v9: 完美看内容量, 其余看分数) > jar率
     # gh 放第一位: 0% 与 99% 的差别是"秒开"和"转圈", 比分数差几分重要得多
+    # vod 放第二位(v19): 这是"有片可点"和"空壳红点"的分界 —— 分数再高,
+    #   站点全是配置中心/网盘/APP聚合, 电视上一样什么都没有
     # perfect 组按 total 降序是 v9 的大仓容错: 200 站死 1 个仍是 99.5%,
     # 不该被 3 站全活的小仓挤掉 —— 大仓才是内容最多的那个
     cands.sort(key=lambda c: (c['gh'],
+                              -c['vod'],
+                              -c['ver'],
                               0 if c['perfect'] else 1,
                               -c['total'] if c['perfect'] else 0,
                               -c['score'], -c['jar'], -c['total']))
@@ -3814,7 +3992,8 @@ def main():
     # 展开后又是一堆仓 —— 与"3个能看的"背道而驰。
     # 函数保留不删(产物备查), 只是不再进清单。
     write_store(kept, os.environ.get('GITHUB_REPOSITORY', ''),
-                bool(channels), None, mine_sites=len(sites))
+                bool(channels), None, mine_sites=len(sites),
+                nav_children=nav_children)
     write_report(items, alive, suspect, deadlist, scored, channels,
                  up_stats, now, ad_stats=ad_stats)
     log('report.md 已生成')
