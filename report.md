@@ -1,12 +1,12 @@
 # TVBox 源检测报告
 
-检测时间: 2026-10-29 08:42 (北京时间)
+检测时间: 2026-10-29 13:56 (北京时间)
 
 ## 一、直链接口检测 (tvbox.json)
 
 | 状态 | 名称 | 接口 | 延迟 | 说明 |
 |---|---|---|---|---|
-| 剔除 | 🧿我要┃吃瓜 | `https://rose.tvdog.top/51chigua.py` | - | 连续失败 17 次: Expecting value: line 1 column 1 (char 0) |
+| 剔除 | 🧿我要┃吃瓜 | `https://rose.tvdog.top/51chigua.py` | - | 连续失败 18 次: 配置无法解析: https://rose.tvdog.top/51chigua.py?ac=list |
 
 接口归集 1 | 存活 0 | 疑似 0 | 剔除 1
 
@@ -21,7 +21,7 @@ v2: 抽测影片<720p降6分(点播画质); 首页无推荐/海报挂降分(推�
 **v12 新增两列, 它们决定点进去会不会转圈**:
 - `GH依赖` = 子资源(jar/外挂js/接口)里落在 GitHub 系(含 gh-proxy 等各类加速代理)的比例。**超过 30% 直接不进清单** —— 配置 json 几十KB, 走代理也能几秒拉到, 所以"仓能打开"; 但仓里的真实内容要另外下载, 全压在同一个慢通道上就是无限转圈。实测 gh-proxy 21KB/s, 七牛云 8.4MB/s, 差 400 倍
 - `jar率` = 站点里 csp_ 打包型的占比。打包型只需下 1 个 jar, 之后全在本地跑; 外挂 js 型每开一个站都要再发 1~2 次请求
-v12: 电视清单 = 我的直播 + 最多 3 个仓, 按 GH依赖升序 > 分数降序 > jar率降序 取前 3; 某仓死亡自动跌出、后面自动补位
+v12: 电视清单 = 我的直播 + 最多 5 个仓, 按 GH依赖升序 > 分数降序 > jar率降序 取前 5; 某仓死亡自动跌出、后面自动补位
 
 | 状态 | 仓 | 分数 | 站点存活 | GH依赖 | jar率 | jar | 广告 | 画质/推荐 | 说明 |
 |---|---|---|---|---|---|---|---|---|---|
@@ -31,16 +31,18 @@ v12: 电视清单 = 我的直播 + 最多 3 个仓, 按 GH依赖升序 > 分数�
 | 剔除 | 🚀俊佬在线 | 0% | 0/24 | 0% (0/7) | 92% | 失效 | 未发现 | — | 健康分 0% 低于门槛 90%, 本轮剔除 |
 | 保留 | 🚀高天流云 | 100% | 298/298 | 100% (514/514) ✘转圈 | 24% | 正常 | 未发现 | — |  |
 | 保留 | 无名聚合 | 100% | 104/104 | 0% (0/3) | 100% | 正常 | 未发现 | — |  |
-| 保留 | qist大而全 | 91% | 79/86 | 92% (76/83) ✘转圈 | 49% | 正常 | 未发现 | — |  |
-| 保留 | 肥猫 | 100% | 39/39 | 0% (0/5) | 97% | 正常 | 未发现 | — |  |
-| 保留 | 老刘备 | 91% | 213/234 | 0% (0/321) | 71% | 正常 | 未发现 | — |  |
-| 剔除 | 小盒子4K | 13% | 7/53 | 5% (3/57) | 72% | 失效 | 未发现 | — | 健康分 13% 低于门槛 90%, 本轮剔除 |
-| 保留 | 创享影视 | 100% | 12/12 | 0% (0/12) | 0% | — | 未发现 | — |  |
-| 剔除 | 伦理接口 | 69% | 32/43 (深测1) | 0% (0/44) | 67% | 正常 | 未发现 | 首页无推荐 | 健康分 69% 低于门槛 90%, 本轮剔除 |
+| 保留 | qist大而全 | 97% | 84/86 | 92% (76/83) ✘转圈 | 49% | 正常 | 未发现 | — |  |
 | 保留 | 小盒子单仓 | 94% | 51/54 | 0% (0/19) | 93% | 正常 | 未发现 | — |  |
+| 剔除 | 小盒子4K | 13% | 7/53 | 5% (3/57) | 72% | 失效 | 未发现 | — | 健康分 13% 低于门槛 90%, 本轮剔除 |
+| 保留 | 王二小 | 100% | 99/99 | 0% (0/1) | 100% | 正常 | 未发现 | — |  |
+| 保留 | 肥猫 | 100% | 39/39 | 0% (0/5) | 97% | 正常 | 未发现 | — |  |
+| 保留 | 老刘备 | 91% | 215/234 | 0% (0/321) | 71% | 正常 | 未发现 | — |  |
+| 保留 | 创享影视 | 100% | 12/12 | 0% (0/12) | 0% | — | 未发现 | — |  |
+| 剔除 | 伦理接口 | 71% | 33/43 (深测1) | 0% (0/44) | 67% | 正常 | 未发现 | 首页无推荐 | 健康分 71% 低于门槛 90%, 本轮剔除 |
 | 保留 | 小盒子多仓 | 入口 | 0/0 | — | 0% | — | 未发现 | — | 多仓入口(导航), 子仓已独立体检 |
+| 保留 | 拾光多仓 | 入口 | 0/0 | — | 0% | — | 未发现 | — | 多仓入口(导航), 子仓已独立体检 |
 
-仓总数 14 | 保留 11 | 剔除 3 | 电视清单前3(GitHub依赖升序优先, >30% 直接不收)
+仓总数 16 | 保留 13 | 剔除 3 | 电视清单前5(GitHub依赖升序优先, >30% 直接不收)
 
 ## 三、高清直播 (live.json, 频道白名单)
 
@@ -73,49 +75,51 @@ v13: 两级探测 —— 每台全部候选先浅探(只拉索引判活, 零 ffp
 
 **①-b 归属豁免**: 9 个**大陆**裸IP扛>=5个台, 按"运营商正常部署"保留(不算广告站): `58.248.112.205`(44台)、`112.27.235.94`(40台)、`101.35.240.114`(25台)、`39.134.115.163`(16台)、`183.207.248.71`(13台)、`112.25.48.68`(12台)、`117.169.120.140`(8台)、`125.210.152.18`(6台)
 
-**② 大陆盲源补位**: 133 条（涉及 57 个台: CCTV-1 综合、CCTV-2 财经、CCTV-3 综艺、CCTV-4 中文国际、CCTV-5 体育、CCTV-5+ 体育赛事、CCTV-6 电影、CCTV-7 国防军事、CCTV-8 电视剧、CCTV-9 纪录）
+**② 大陆盲源补位**: 141 条（涉及 57 个台: CCTV-1 综合、CCTV-2 财经、CCTV-3 综艺、CCTV-4 中文国际、CCTV-5 体育、CCTV-5+ 体育赛事、CCTV-6 电影、CCTV-7 国防军事、CCTV-8 电视剧、CCTV-9 纪录）
 
 > 这些线在 GitHub 的境外机器上连不上(地理原因, 不是死链), 所以标"未实测"。它们在**你家的宽带上**很可能能播, 而且没有起播广告 —— 播放器会自动在几条线之间切换。
 
-**③ 起播实测**: 判为伪直播/贴片的线路 7 条（索引不前进(seq 0->0), 索引不前进(seq 199559->199559), 索引不前进(seq 267287238->267287238)）
+**③ 起播实测**: 判为伪直播/贴片的线路 6 条（索引不前进(seq 0->0), 索引不前进(seq 267287238->267287238), 索引不前进(seq 287140012->287140012)）
 
 > 这些台不是"源坏了"，是原来那条线打开就要先看广告。想补回来只能加更干净的直播上游(见 sources.txt 的 L| 行)。
 
 | 频道 | 分组 | 线路数 | 高清/备线 | 最佳画质 |
 |---|---|---|---|---|
+| CCTV-16 奥林匹克 | 央视 | 1 | 0/0 | 未实测 |
+| CCTV-5 体育 | 央视 | 1 | 0/0 | 未实测 |
 | 东南卫视 | 卫视 | 1 | 1/0 | 1080p (+2条未实测) |
-| 东方卫视 | 卫视 | 3 | 1/1 | 1080p (+1条未实测) |
+| 东方卫视 | 卫视 | 3 | 2/0 | 1080p (+1条未实测) |
 | 内蒙古卫视 | 卫视 | 1 | 1/0 | 1080p (+2条未实测) |
-| 安徽卫视 | 卫视 | 1 | 1/0 | 1080p/3163k (+2条未实测) |
-| 新疆卫视 | 卫视 | 1 | 2/0 | 未实测 |
+| 安徽卫视 | 卫视 | 1 | 1/0 | 1080p/3630k (+2条未实测) |
+| 新疆卫视 | 卫视 | 2 | 1/0 | 未实测 |
 | 江苏卫视 | 卫视 | 1 | 1/0 | 4K (+2条未实测) |
 | 河北卫视 | 卫视 | 2 | 0/2 | 540p (+1条未实测) |
-| 浙江卫视 | 卫视 | 1 | 2/0 | 1080p (+1条未实测) |
 | 湖南卫视 | 卫视 | 1 | 2/0 | 4K (+1条未实测) |
-| 西藏卫视 | 卫视 | 1 | 2/0 | 1080p (+1条未实测) |
+| 西藏卫视 | 卫视 | 1 | 1/0 | 未实测 |
 | 青海卫视 | 卫视 | 1 | 0/0 | 未实测 |
 
-直播频道 11 个 / 线路 14 条；2 个台整台无实测线(仅索引可达, 可能打不开)；9 个台主线路已实测, 另有备用线只做了探活
+直播频道 12 个 / 线路 16 条；5 个台整台无实测线(仅索引可达, 可能打不开)；7 个台主线路已实测, 另有备用线只做了探活
 
 ### 直播速度门槛 (300kbps)
 
-- **已启用**: 只收家里实测 >=300kbps 的线路; 本轮删掉 159 条不够用的线(含从没测过的), 清单剩 11 台 / 14 条线
+- **已启用**: 只收家里实测 >=300kbps 的线路; 本轮删掉 157 条不够用的线(含从没测过的), 清单剩 12 台 / 16 条线
 
 | 频道 | 第一条实测 | 线路数 |
 |---|---|---|
+| CCTV-16 奥林匹克 | 744 kbps | 1 |
+| CCTV-5 体育 | 1367 kbps | 1 |
 | 东南卫视 | 2199 kbps | 1 |
 | 东方卫视 | 2071 kbps | 3 |
 | 内蒙古卫视 | 2491 kbps | 1 |
 | 安徽卫视 | 4338 kbps | 1 |
-| 新疆卫视 | 3415 kbps | 1 |
+| 新疆卫视 | 4476 kbps | 2 |
 | 江苏卫视 | 825 kbps | 1 |
 | 河北卫视 | 5543 kbps | 2 |
-| 浙江卫视 | 8178 kbps | 1 |
 | 湖南卫视 | 5646 kbps | 1 |
 | 西藏卫视 | 4114 kbps | 1 |
 | 青海卫视 | 4185 kbps | 1 |
 
-**被删掉的台 (47)**: CCTV-1 综合(0kbps)、CCTV-2 财经(0kbps)、CCTV-3 综艺(0kbps)、CCTV-4 中文国际(0kbps)、CCTV-5 体育(0kbps)、CCTV-5+ 体育赛事(0kbps)、CCTV-6 电影(0kbps)、CCTV-7 国防军事(0kbps)、CCTV-8 电视剧(0kbps)、CCTV-9 纪录(0kbps)、CCTV-10 科教(0kbps)、CCTV-11 戏曲(0kbps)、CCTV-12 社会与法(0kbps)、CCTV-13 新闻(0kbps)、CCTV-14 少儿(0kbps)、CCTV-15 音乐(0kbps)、CCTV-16 奥林匹克(0kbps)、CCTV-17 农业农村(0kbps)、广东卫视(0kbps)、北京卫视(0kbps)、湖北卫视(0kbps)、黑龙江卫视(0kbps)、重庆卫视(0kbps)、甘肃卫视(0kbps)……等 47 个(完整清单见 live_cand.txt 的频道名)
+**被删掉的台 (46)**: CCTV-1 综合(0kbps)、CCTV-2 财经(0kbps)、CCTV-3 综艺(0kbps)、CCTV-4 中文国际(0kbps)、CCTV-5+ 体育赛事(0kbps)、CCTV-6 电影(0kbps)、CCTV-7 国防军事(0kbps)、CCTV-8 电视剧(0kbps)、CCTV-9 纪录(0kbps)、CCTV-10 科教(0kbps)、CCTV-11 戏曲(0kbps)、CCTV-12 社会与法(0kbps)、CCTV-13 新闻(0kbps)、CCTV-14 少儿(0kbps)、CCTV-15 音乐(0kbps)、CCTV-17 农业农村(0kbps)、广东卫视(0kbps)、浙江卫视(0kbps)、北京卫视(0kbps)、湖北卫视(0kbps)、黑龙江卫视(0kbps)、重庆卫视(0kbps)、甘肃卫视(0kbps)、广西卫视(0kbps)……等 46 个(完整清单见 live_cand.txt 的频道名)
 
 > 这些台不是配置坏了, 是在你家这条宽带上它们的线路实测出不了流(教育网/运营商专网的 IP 居多)。想补回来只能等下次测速出现这些台 >=300kbps 的新线路。
 
@@ -124,7 +128,7 @@ v13: 两级探测 —— 每台全部候选先浅探(只拉索引判活, 零 ffp
 | 状态 | 上游 | 命中白名单 | 总条数 | 备注 |
 |---|---|---|---|---|
 | ✓ | Guovin大池 | 303 | 1619 | — |
-| ✓ | vbskycn活池 | 21 | 282 | — |
+| ✓ | vbskycn活池 | 27 | 433 | — |
 | ✓ | iptv-org中国 | 168 | 511 | — |
 | ✓ | iptv-org香港 | 3 | 25 | — |
 | ✓ | suxuang合集 | 279 | 1225 | — |
@@ -150,14 +154,14 @@ https://gh-proxy.com/https://raw.githubusercontent.com/xieyulongxiett/tvbox-auto
 
 判定规则: 至少 2 个不同仓同时列出的域名才算共识。单仓列出的不启用 —— 上游常有把正常图床写进 ads 的, 一启用连海报都加载不出来
 
-### 共识域名 (1 个)
+### 共识域名 (2 个)
 
 ```
-static-mozai.4gtv.tv
+static-mozai.4gtv.tv, mozai.4gtv.tv
 ```
 
 ### 单仓列出 (63 个, 默认不启用)
 
 ```
-ae01.alicdn.com, c.cnzz.com, cdn.bootcss.com, cdnjs.hnfenxun.com, cms.qdwght.com, cnzz.hhttm.top, cnzz.mmstat.com, ehwe.yhdtns.com, f5w.as12df.top, hm.baidu.com, img.mosflower.cn, img.xunzhuo123.com, iqiyi.hbuioo.com, itvba.xyz, k.jinxiuzhilv.com, k.wudejia.com, lf1-cdn-tos.bytegoofy.com, mav.mavuz.com, mc.usihnbcq.cn, mg.g1mm3d.cn, mimg.0c1q0l.cn, mozai.4gtv.tv, mscs.svaeuzh.cn, ppl.xunzhuo123.com, q11.cnzz.com, qiu.xixiqiu.com, s13.cnzz.com, s19.cnzz.com, s23.cnzz.com, s3t3d2y8.afcdn.net, s4.cnzz.com, s9.cnzz.com, s96.cnzz.com, sp.chemacid.cn, stj.v1vo.top, thy.dacedsfa.cn, tips.gamevvip.com, tj.tianwenhu.com, tp.vinuxhome.com, um.cavuc.com, vip.ffzyad.com, vivovip.mmszxc.top, wan.51img1.com, wofwk.aoidf3.com, www.92424.cn, www.baihuillq.com, www.google-analytics.com, www.googletagmanager.com, www.jixunkyy.cn, xc.hubeijieshikj.cn, xdn.cqqc3.com, xg.gars57.cn, xg.huataisangao.cn, xg.whsbpw.cn, xomk.jiangjunmh.top, z1.cnzz.com, z12.cnzz.com, z2.cnzz.com, z3.cnzz.com, z5.cnzz.com  …另有 3 个
+ae01.alicdn.com, c.cnzz.com, cdn.bootcss.com, cdnjs.hnfenxun.com, cms.qdwght.com, cnzz.hhttm.top, cnzz.mmstat.com, ehwe.yhdtns.com, f5w.as12df.top, hm.baidu.com, img.mosflower.cn, img.xunzhuo123.com, iqiyi.hbuioo.com, itvba.xyz, k.jinxiuzhilv.com, k.wudejia.com, lf1-cdn-tos.bytegoofy.com, mav.mavuz.com, mc.usihnbcq.cn, mg.g1mm3d.cn, mimg.0c1q0l.cn, mscs.svaeuzh.cn, ppl.xunzhuo123.com, pv.vipwm.cc, q11.cnzz.com, qiu.xixiqiu.com, s13.cnzz.com, s19.cnzz.com, s23.cnzz.com, s3t3d2y8.afcdn.net, s4.cnzz.com, s9.cnzz.com, s96.cnzz.com, sp.chemacid.cn, stj.v1vo.top, thy.dacedsfa.cn, tips.gamevvip.com, tj.tianwenhu.com, tp.vinuxhome.com, um.cavuc.com, vip.ffzyad.com, vivovip.mmszxc.top, wan.51img1.com, wofwk.aoidf3.com, www.92424.cn, www.baihuillq.com, www.google-analytics.com, www.googletagmanager.com, www.jixunkyy.cn, xc.hubeijieshikj.cn, xdn.cqqc3.com, xg.gars57.cn, xg.huataisangao.cn, xg.whsbpw.cn, xomk.jiangjunmh.top, z1.cnzz.com, z12.cnzz.com, z2.cnzz.com, z3.cnzz.com, z5.cnzz.com  …另有 3 个
 ```
