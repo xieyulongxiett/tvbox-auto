@@ -1,31 +1,31 @@
 {
  "apis": {
   "https://cdn.jsdmirror.com/gh/ouhaibo1980/tvbox@main/py/py_douban.py": {
-   "fails": 1,
-   "last_fail": "2026-10-30 08:52",
+   "fails": 2,
+   "last_fail": "2026-10-30 11:19",
    "reason": "HTTP Error 521: Connection Reset by Origin Server"
   },
   "https://rose.tvdog.top/51chigua.py": {
-   "fails": 22,
-   "last_fail": "2026-10-30 08:52",
+   "fails": 23,
+   "last_fail": "2026-10-30 11:19",
    "reason": "配置无法解析: https://rose.tvdog.top/51chigua.py?ac=list"
   }
  },
  "stores": {
   "http://47.96.82.41:5188/rose/18/xgg.json": {
-   "last_fail": "2026-10-30 08:52",
+   "last_fail": "2026-10-30 11:19",
    "score": 0.72
   },
   "http://home.jundie.top:81/top98.json": {
-   "last_fail": "2026-10-30 08:52",
+   "last_fail": "2026-10-30 11:19",
    "score": 0
   },
   "http://xhztv.top/4k.json": {
-   "last_fail": "2026-10-30 08:52",
-   "score": 0.13
+   "last_fail": "2026-10-30 11:19",
+   "score": 0.11
   },
   "https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/%E5%8D%95%E4%BB%93%E8%81%9A%E5%90%88.json": {
-   "last_fail": "2026-10-30 08:52",
+   "last_fail": "2026-10-30 11:19",
    "score": 0.86
   }
  }
