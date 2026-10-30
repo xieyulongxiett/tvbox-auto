@@ -715,6 +715,129 @@ def test_cdn_profile_malformed():
     assert cs.cdn_profile({'spider': 123, 'sites': []})['sites'] == 0
 
 
+def test_norm_url_is_idempotent():
+    """v21: norm_url 必须幂等 —— 已编码的百分号不能被再编一次
+
+    sources.txt 里 Lightconer单仓聚合的地址是已编码形式(%E5%8D%95...),
+    旧实现 safe 里没有 '%', 直接 quote 就变成 %25E5%258D%95...,
+    于是去请求一个字面上叫 "%E5...json" 的文件 -> 404。
+    那个源(516 站点)就是这样连体检表都进不去的, 不是源死了。
+    """
+    enc = ('https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/'
+           'main/output/%E5%8D%95%E4%BB%93%E8%81%9A%E5%90%88.json')
+    once = cs.norm_url(enc)
+    assert '%25' not in once, '百分号被二次编码了: %s' % once
+    assert cs.norm_url(once) == once, 'norm_url 不幂等'
+
+    # 未编码的中文路径要能编出来, 且和"已编码"收敛到同一个结果
+    raw = ('https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/'
+           'main/output/单仓聚合.json')
+    assert cs.norm_url(raw) == once, (cs.norm_url(raw), once)
+
+    # 中文域名仍然要转 punycode
+    idn = cs.norm_url('http://www.饭太硬.net/tv')
+    assert 'xn--' in idn, idn
+    assert cs.norm_url(idn) == idn, 'punycode 形式也要幂等'
+
+
+def test_store_fingerprint_uses_all_sites():
+    """v21: 指纹必须看**全部**站点, 只看前 5 个会误杀好仓
+
+    饭太硬(48站)与挺好分享(46站)前 5 个 api/key 完全一样 —— 这圈子的配置
+    都是从同一批热门源复制来的, 开头几个几乎必然雷同。旧规则下两者指纹相同,
+    饭太硬(含 16 个独有站)被当成"换马甲克隆仓"静默删掉。
+    """
+    head = [{'api': 'csp_Douban'}, {'api': 'csp_YGP'},
+            {'api': 'csp_Config'}, {'api': 'csp_Alllive'},
+            {'api': 'csp_Duopan'}]
+    a = {'sites': head + [{'api': 'csp_Own1'}, {'api': 'csp_Own2'}]}
+    b = {'sites': head}
+    assert cs.store_fingerprint(a) != cs.store_fingerprint(b), \
+        '只有前 5 个相同时, 指纹不该撞车'
+
+    # 真·克隆(内容完全一致)仍然要能被认出来
+    c = {'sites': [dict(x) for x in a['sites']]}
+    assert cs.store_fingerprint(c) == cs.store_fingerprint(a)
+
+
+def test_cdn_profile_tracks_proxied_gh():
+    """v21: 单独统计"已套代理"的 GH 资源, 但**淘汰仍按全量**算
+
+    gh-proxy 实测只有 21KB/s —— 过代理只是"能连上", 不等于不慢。
+    所以报告里会区分展示(裸奔 / 已加速), 但 gh_rate 不含豁免;
+    否则 高天流云(99% GH、用户电视上"一直转圈"的元凶)会被洗白。
+    """
+    cfg = {'spider': 'https://cdn.a.com/x.jar', 'sites': [
+        {'api': 'https://ghproxy.net/https://raw.githubusercontent.com/a/b.js'},
+        {'api': 'https://gh-proxy.com/https://raw.githubusercontent.com/c/d.js'},
+        {'api': 'csp_OK'}]}
+    p = cs.cdn_profile(cfg, 'http://www.a.com/tv')
+    assert p['gh_cnt'] == 2, p             # 过代理也算 GH 源, 照常计入
+    assert p['proxied_cnt'] == 2, p        # 额外记一笔, 供报告展示
+    # v21: 门槛放宽到 0.90 后, 66.7% **不再**触发淘汰 —— 这正是本次改动的
+    #   目的(让 饭太硬86% / Lightconer70% 这类仓进得了清单)。
+    #   但"统计"不能因此失效: gh_cnt/proxied_cnt 上面两个断言守着。
+    assert p['gh_rate'] < cs.STORE_GH_MAX, p
+
+    # 裸奔的不计入 proxied_cnt
+    cfg2 = {'spider': 'https://raw.githubusercontent.com/a/x.jar',
+            'sites': [{'ext': 'https://raw.githubusercontent.com/a/y.js'}]}
+    p2 = cs.cdn_profile(cfg2, 'http://www.b.com/tv')
+    assert p2['gh_cnt'] == 2, p2
+    assert p2['proxied_cnt'] == 0, p2
+    assert p2['gh_rate'] > cs.STORE_GH_MAX, p2
+
+
+def test_write_store_admits_high_gh_stores():
+    """v21: GH 依赖 86%(饭太硬) / 70%(Lightconer) 的仓**要能进最终清单**
+
+    背景: v20 及之前 STORE_GH_MAX=0.30, 这两类仓一律被"通道淘汰"挡在
+    门外 —— 用户 2026-10-29 拍板"把饭太硬拉进去, Lightconer单仓聚合,
+    我是指最终的清单", 于是放宽到 0.90。
+
+    放宽后仍须守住两条线(否则等于门槛名存实亡):
+      ① 100% GH(高天流云, 电视转圈元凶)仍被拒;
+      ② 新进来的高 GH 仓排在 GH 0% 的仓**后面**(gh 是第一排序键、升序),
+         不允许挤掉清单头部那些确定好用的仓。
+    """
+    tmp = tempfile.mkdtemp()
+    old = cs.STORE
+    try:
+        cs.STORE = os.path.join(tmp, 'store.json')
+        scored = _scored() + [
+            # 饭太硬: 48 站点, 影视 40%, GH 86%(6条全过 ghproxy 中转)
+            {'url': 'http://s7/fantaiying.json', 'name': '饭太硬',
+             'kind': 'store', 'score': 1.0, 'state': '保留',
+             'alive': 48, 'total': 48, 'gh_rate': 0.86,
+             'sites_n': 48, 'jar_rate': 1.0, 'vod_ratio': 0.40},
+            # Lightconer单仓聚合: 516 站点, 影视 34%, GH 70%(304条裸奔)
+            {'url': 'http://s8/lightconer.json', 'name': 'Lightconer单仓聚合',
+             'kind': 'store', 'score': 1.0, 'state': '保留',
+             'alive': 516, 'total': 516, 'gh_rate': 0.70,
+             'sites_n': 516, 'jar_rate': 0.92, 'vod_ratio': 0.34},
+        ]
+        kept = [s for s in scored if s['state'] != '剔除']
+        cs.write_store(kept, 'owner/repo', True, [])
+        cfg = json.load(open(cs.STORE, encoding='utf-8'))
+        names = [e['name'] for e in cfg['urls']]
+
+        # ① 两个高 GH 仓都要进清单
+        assert any('饭太硬' in n for n in names), names
+        assert any('Lightconer' in n for n in names), names
+        # ② 必须带 GH 标记, 方便电视端识别后跳过
+        assert any('G86' in n for n in names), names
+        assert any('G70' in n for n in names), names
+        # ③ 100% GH 的转圈仓仍被拒 —— 放宽不等于放行
+        assert all('转圈仓F' not in n for n in names), names
+        # ④ 排序: 高 GH 的沉在 GH 0% 的完美仓之后
+        i_fan = next(i for i, n in enumerate(names) if '饭太硬' in n)
+        i_a = next(i for i, n in enumerate(names) if '完美仓A' in n)
+        assert i_fan > i_a, names
+    finally:
+        cs.STORE = old
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_is_perfect_store():
     """v9: 大仓容错 —— 小仓仍要 100%, 大仓允许死 1 个"""
     assert cs.is_perfect_store({'score': 1.0, 'total': 3, 'alive': 3}) is True

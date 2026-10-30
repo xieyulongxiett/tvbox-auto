@@ -34,7 +34,12 @@
 @https://ztha.top/TVBox/GYCK.json | 挺好分享多仓
 @https://6800.kstore.vip/fish.json | 无名聚合
 @https://raw.githubusercontent.com/qist/tvbox/master/0821.json | qist大而全
-# v19 新增: 516 站点大池, GitHub系子资源仅 2%, spider 落在国内 CDN
+# v19 新增, v21 修正: 516 站点大池, spider 落在国内 CDN(ss1.eisite.cn),
+#   但 496 个子资源里 309 个直接裸奔 raw.githubusercontent.com(62%)。
+#   v20 门槛 30% 时它**进不了**清单; v21 放宽到 90%(用户 10-29 拍板要收),
+#   现在能进 —— 名字会带 ·G62 标记, 且排在 GH 0% 的仓后面。
+#   注: 此处地址本身是已编码的百分号形式, v21 前 norm_url 会二次编码成 %25E5
+#   导致 404 —— 它以前连体检表都进不去, 不是"源死了"。
 @https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/%E5%8D%95%E4%BB%93%E8%81%9A%E5%90%88.json | Lightconer单仓聚合
 
 # v19 新增(2026-10-29 实测可用):

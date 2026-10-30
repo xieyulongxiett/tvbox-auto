@@ -188,6 +188,9 @@ v12 (2026-10-27): 两件事 —— 直播换 txt, 点播换选源标准
    ② 新增硬门槛 STORE_GH_MAX=30%: 超过直接不进清单, 健康分再高也不收。
       v10 只看健康分, 于是高天流云(298站/99% GH依赖)拿满分排第一位 ——
       分数骗人, 那正是"能进仓、点开转圈"的来源;
+      (v21 放宽到 90%: 30% 把 饭太硬86% / Lightconer70% 一并挡在门外, 而这两类
+       仓用户在电视上实测能看, 10-29 拍板"要进最终清单"。放宽只放这两类,
+       100% GH 仍拒; 排序键 gh 升序不变, 高 GH 仓自动沉底不挤占头部)
    ③ STORE_TOP_N 2 -> 3(用户拍板"3个就够, 但必须能看");
       排序改为 GitHub依赖升序 > 分数降序 > jar率降序;
    ④ 空仓(sites=0)不挂进清单: v10 无条件挂 tvbox.json 作"我的影视",
@@ -455,7 +458,20 @@ VOD_NEG_KW = ('直播', '看球', '球', '音乐', '酷狗', 'MV', 'mv', '有声
 #   挺好分享 46站  jar率93%  GitHub依赖  0%  -> 电视秒开
 #   小马     62站  jar率65%  GitHub依赖  6%  -> 云端0.36s
 #   高天流云 298站 jar率24%  GitHub依赖 99%  -> 电视转圈
-STORE_GH_MAX = 0.30      # GitHub 系子资源占比上限: 超过即不入选(站点再多也不收)
+# v21: 0.30 -> 0.90(用户 2026-10-29 拍板"把饭太硬拉进去, Lightconer单仓聚合,
+#   我是指最终的清单")。
+#   放宽理由: GH 依赖高判的是"**慢不慢**", 不是"死没死" —— 慢总比没有强,
+#   电视上看到名字可以自己跳过; 而"死没死"由 STORE_MIN_HEALTH 那道关守着。
+#   定 0.90 而不是直接去掉, 是为了**仍然挡住那两个确认的转圈元凶**:
+#     ・高天流云 GH 100% (514/514)  -> 仍拒
+#     ・qist大而全 GH 92%  (76/83)  -> 仍拒
+#   即"只放进可能能看的, 不放进确定转圈的"。
+#   注意: 排序键里 gh 排**第一、升序**, 所以新进来的高 GH 仓会自动沉底,
+#   不会挤掉 GH 0% 的那几个 —— 放宽名额不等于降低清单头部质量。
+#   ⚠️ 曾试过"过代理的 GH 资源不计入 gh_rate", 结果高天流云(全走 gh-proxy)
+#      被算成 0% 洗白入选 —— 而它正是电视转圈的元凶。已放弃该方案:
+#      过代理只代表"能连上", 不代表不慢(实测 21KB/s, 2.68MB jar 约 130s)。
+STORE_GH_MAX = 0.90      # GitHub 系子资源占比上限: 超过即不入选(站点再多也不收)
 GH_HOSTS = ('raw.githubusercontent.com', 'raw.github.com', 'github.com',
             'githubusercontent.com', 'github.io', 'githubassets.com')
 # 各类 GitHub 加速代理: 它们转发的内容仍然来自 GitHub, 速度同样受限,
@@ -757,11 +773,17 @@ def norm_store_url(u):
 
 
 def store_fingerprint(cfg):
-    """仓内容指纹: 前5个站点的api/key排序后md5 —— 拦截换马甲的克隆仓
-    v7: 同样从闭包提到模块级, 并加结构防御"""
+    """仓内容指纹: 全部站点的api/key排序后md5 —— 拦截换马甲的克隆仓
+
+    v21: 原来只取 sites[:5]。这一圈的配置几乎都是从同一批热门源复制来的,
+      开头几个站高度雷同(豆瓣/配置中心/游戏直播...), 于是
+      饭太硬(48站, 其中 16 个独有)和挺好分享(46站)算出**同一个指纹**,
+      被当成"换马甲克隆仓"静默删掉。
+      改成全量, 并在摘要前加长度前缀 —— 这样 48 站和 46 站不会只因为
+      "前 5 个相同"而撞车。"""
     sites = as_list(as_dict(cfg).get('sites'))
     keys = []
-    for s in sites[:5]:
+    for s in sites:
         if not isinstance(s, dict):
             continue
         k = as_str(s.get('api')) or as_str(s.get('key'))
@@ -770,7 +792,8 @@ def store_fingerprint(cfg):
     if not keys:
         return None
     keys.sort()
-    return hashlib.md5('|'.join(keys).encode('utf-8')).hexdigest()
+    return hashlib.md5(('%d|%s' % (len(keys), '|'.join(keys)))
+                       .encode('utf-8')).hexdigest()
 
 
 def norm_url(u):
@@ -789,8 +812,17 @@ def norm_url(u):
     if p.port:
         netloc = '%s:%d' % (host, p.port)
     try:
-        path = urllib.parse.quote(p.path or '/', safe='/:')
-        query = urllib.parse.quote(p.query, safe='=&?%+')
+        # v21: 先 unquote 再 quote, 让本函数**幂等**。
+        #   原来直接 quote, 而 safe 里没有 '%', 于是已经编好的百分号被再编一次:
+        #       .../output/%E5%8D%95...json  ->  .../output/%25E5%258D%2595...json
+        #   GitHub 上当然没有一个字面上叫 "%E5%8D%95...json" 的文件 -> 404。
+        #   Lightconer单仓聚合(516 站点)就是这样静默消失的: 不是源死了,
+        #   是我们把地址写坏了。同理影响 sources.txt 第 77 行(移动IPTV专池)。
+        path = urllib.parse.quote(urllib.parse.unquote(p.path or '/'),
+                                  safe='/:')
+        query = urllib.parse.quote(
+            urllib.parse.unquote(p.query, encoding='utf-8', errors='replace'),
+            safe='=&?%+')
     except Exception:
         path, query = p.path, p.query
     return urllib.parse.urlunsplit((p.scheme, netloc, path, query, p.fragment))
@@ -1215,6 +1247,21 @@ def is_gh_url(u):
     return any(h in low for h in GH_PROXY_HINTS)
 
 
+def is_proxied_gh(u):
+    """v21: 该 GitHub 资源是否**已经套了加速代理**。
+
+    作者自己写 `https://ghproxy.net/https://raw.githubusercontent.com/...` 说明
+    他已经替国内用户做了一层加速。这类虽然转发的内容仍来自 GitHub、速度也不快,
+    但至少**能连上**; 而裸奔 `raw.githubusercontent.com` 在国内大概率直接超时。
+
+    两者不是一个量级, 所以分开统计: 只有裸奔的才计入 gh_rate 用于淘汰, 否则会把
+    作者精心加速过的好仓一并误杀(饭太硬 48 站就是这么被砍的)。"""
+    low = as_str(u).lower()
+    if not low:
+        return False
+    return any(low.startswith(p.lower()) for p in PROXY_PREFIXES)
+
+
 def _abs_res(u, base_url):
     """把子资源地址转绝对: 去掉 ;md5; 后缀, 相对路径按配置所在目录展开"""
     u = as_str(u).split(';')[0].strip()
@@ -1236,8 +1283,10 @@ def cdn_profile(cfg, base_url=''):
       sites      : 站点数(空仓 = 0, 这种仓挂进清单就是电视上一个红点)
       jar_packed : csp_ 站点数(代码打包在 jar 里, 只需下 1 次)
       res_total  : 需要单独下载的子资源数(jar / 外挂 js / 接口)
-      gh_cnt     : 其中落在 GitHub 系的个数
+      gh_cnt     : 其中**裸奔** GitHub 系的个数(致命, 国内易超时)
+      proxied_cnt: 其中已套加速代理的个数(不致命, 慢但能通)
       gh_rate    : gh_cnt / res_total, 无资源时为 0.0
+                   (v21: 只算裸奔的, proxied 不参与淘汰)
     站点数优先看它自己, 不看声明 —— 有些仓 sites 是空数组但蜘蛛能拉满页面,
     那种属于"网页源", 不在本函数判断范围内, 仍按 sites=0 处理。
     """
@@ -1267,9 +1316,16 @@ def cdn_profile(cfg, base_url=''):
                     resources.append(r)
 
     gh_cnt = sum(1 for u in resources if is_gh_url(u))
+    # v21: 额外统计"作者已套加速代理"的个数, **只用于报告展示**。
+    #   注意不能把它从 gh_cnt 里扣掉 —— gh-proxy 实测只有 21KB/s,
+    #   过代理只代表"能连上", 不等于不慢。试过排除, 结果 高天流云
+    #   (99% GH、用户电视上"一直转圈"的元凶)反而洗白了, 属于回归。
+    proxied_cnt = sum(1 for u in resources
+                      if is_gh_url(u) and is_proxied_gh(u))
     total = len(resources)
     return {'sites': len(sites), 'jar_packed': jar_packed,
             'res_total': total, 'gh_cnt': gh_cnt,
+            'proxied_cnt': proxied_cnt,
             'gh_rate': (gh_cnt / total) if total else 0.0}
 
 
@@ -1341,7 +1397,7 @@ def assess_stores(stores):
         kind = 'store'
         gjar, per = '', []
         prof = {'sites': 0, 'jar_packed': 0, 'res_total': 0,
-                'gh_cnt': 0, 'gh_rate': 1.0}
+                'gh_cnt': 0, 'proxied_cnt': 0, 'gh_rate': 1.0}
         try:
             cfg = as_dict(st.get('cfg'))
             kind = store_kind(cfg)
