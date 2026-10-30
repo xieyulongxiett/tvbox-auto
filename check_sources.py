@@ -365,6 +365,15 @@ REPORT = os.path.join(HERE, 'report.md')
 DEADLOG = os.path.join(HERE, 'dead_log.json')
 ADS_POOL = os.path.join(HERE, 'ads_pool.json')   # v10: 广告域名清单(供人工过目)
 GEO_CACHE = os.path.join(HERE, 'ip_geo.json')     # v15: IP归属缓存(跨轮复用)
+MIRROR_DIR = os.path.join(HERE, 'mirror')         # v21.1: 图片伪装配置转存目录
+# v21.1: 两个跨阶段传递的记录 ----
+# ① STORE_DIAG: 记录"没能进体检表的源"及原因。
+#    以前 @ 源拉不到或被判重复, 只 log 一句就 continue, 报告里什么都不留 ——
+#    饭太硬就这么消失了整整一天, 谁也不知道它到底死在哪一步(2026-10-30)。
+#    源被丢弃是常态, 但只要看不见, 每次都得从头猜一遍。
+# ② IMG_DISGUISE: fetch_json 刚处理过的响应是不是"伪装成图片的"。
+STORE_DIAG = []      # 元素: {'name','url','reason'}
+IMG_DISGUISE = False
 
 # ---- v7: 代理与 raw 域名集中定义 ----
 # 原来 gh-proxy.com 在 http_get / tv_url / norm_store_url / write_report 里
@@ -382,7 +391,15 @@ TIMEOUT_DEP = 8       # 仓依赖检测超时(秒)
 TIMEOUT_LIVE = 8      # 直播流拉取超时(秒)
 TIMEOUT_PROBE = 12    # ffmpeg/ffprobe 画质探测超时(秒)
 FAIL_LIMIT = 2        # 接口连续失败次数达到该值才剔除
-STORE_MIN_HEALTH = 0.9   # 补位仓门槛: 90分(凑不齐完美仓时用它补位)
+STORE_MIN_HEALTH = 0.85  # 健康分门槛: 站点存活占比低于此值本轮剔除
+# v21.1(2026-10-30) 0.90 -> 0.85, 只为了收 Lightconer单仓聚合(85%, 467/516)。
+#   它不是"放水", 是把**地域错位**补回来: 它的 305 个 GitHub 子资源在境外
+#   runner 上全部可达, 死的 49 个反而是非 GH 的站点 —— 典型的"境外连不上
+#   国内资源"。而用户看电视在湖南、走中国移动宽带, 检测机看不到的,
+#   他那边恰恰是通的。降这 5 个点, 换来的是 516 个站点而不是一句"剔除"。
+#   为什么不到 0.80: 当前一并被剔除的是 俊佬在线0% / 小盒子4K11% / 伦理接口71%,
+#   它们全都低于 0.85 —— 也就是说这一刀**只放进 Lightconer 一个**, 没有
+#   顺带放进任何一个已知打不开的仓。再往下砍才会放进真正的死仓。
 STORE_PERFECT = 1.0      # v4: 完美仓线=100%(一票否决: 死1个地址整仓出局)
 STORE_FAIL_LIMIT = 1     # 一轮即踢(每轮从sources重新归集, 下轮达标自动回来)
 STORE_TOP_N = 8          # v20: 8个(v19 定的 5 个里有 3 个被多仓导航入口占掉,
@@ -846,6 +863,14 @@ def http_get(url, timeout, max_bytes=None, headers=None):
 
 
 def fetch_json(url, timeout):
+    # v21.1: 记录"这次拿到的是不是伪装成图片的响应" —— 调用方据此决定
+    #   要不要把配置转存成普通 JSON(见 dump_mirror)。
+    #   起因: 饭太硬(http://www.饭太硬.net/tv 等 5 个域名全部如此)恒定返回
+    #   一张 JPEG, 真实配置 base64 藏在图片字节里。我们的解析器能解, 但
+    #   **电视上的播放器不能** —— 它拿到的是 Content-Type: image, 直接失败。
+    #   所以必须转存一份纯 JSON 给电视看, 而"要不要转存"只能在这里判定。
+    global IMG_DISGUISE
+    IMG_DISGUISE = False
     st, data = http_get(url, timeout)
     if st != 200:
         raise RuntimeError('HTTP %s' % st)
@@ -857,10 +882,20 @@ def fetch_json(url, timeout):
             if '**' in tail:
                 tail = tail.split('**')[-1]
             tail = re.sub(r'\s+', '', tail)
-            try:
-                data = base64.b64decode(tail + '=' * (-len(tail) % 4))
-            except Exception:
-                pass
+            if len(tail) >= 8:      # 空尾巴 b64decode 也"成功", 会吃掉真错误
+                try:
+                    got = base64.b64decode(tail + '=' * (-len(tail) % 4))
+                    if len(got) > 16:
+                        data = got
+                        IMG_DISGUISE = True
+                except Exception:
+                    pass
+        if not IMG_DISGUISE:
+            # v21.1: 以前这里是静默 pass, 一路走到"配置无法解析",
+            #   看上去跟"源挂了"一模一样, 排查时完全不知道响应体是张图。
+            raise RuntimeError(
+                '返回的是一张图片(%d 字节 JPEG)而不是配置, 且藏在里面的 '
+                'base64 没能解出来 —— 电视上的播放器同样读不了它' % len(data))
     txt = data.decode('utf-8-sig', 'ignore')
     # v19: strict=False —— 有些仓的 JSON 字符串里嵌了裸控制字符(如 \x00~\x1f),
     #   默认 strict=True 会直接报 "Invalid control character" 而整仓判死。
@@ -888,6 +923,48 @@ def fetch_json(url, timeout):
         obj, _ = json.JSONDecoder(strict=False).raw_decode(head)
         return obj
     raise RuntimeError('配置无法解析: %s' % url[:80])
+
+
+def mirror_fname(url):
+    """转存文件名: 中文域名/路径进不了 URL, 一律按源地址取哈希"""
+    return 'm-%s.json' % hashlib.md5(
+        url.encode('utf-8', 'ignore')).hexdigest()[:10]
+
+
+def dump_mirror(url, cfg, repo):
+    """v21.1: 把"图片伪装"的配置转存成本仓库里一个普通 JSON
+
+    为什么非要转存:
+      饭太硬这类源对外只给一张 JPEG, 配置藏在图片字节里。**电视上的播放器
+      不会解这个**(它看到 Content-Type: image 就失败), 所以就算把它的地址
+      写进 store.json, 电视上点开也是空的。要让它真能用, 只能由我们能读懂
+      的一方(本脚本)把内容转存成普通 JSON, 再给电视一个纯文本的下载地址。
+
+    投递链: Actions 每天更新本仓库里的 mirror/*.json -> jsDelivr 回源 ->
+      电视拉到纯 JSON。jsDelivr 国内可达且能回源 GitHub; 这几个文件只有
+      几十 KB, 与"jar 压在慢通道上会转圈"不是一回事。
+
+    失败时**保留上一轮的旧文件**: 某轮拉不到上游(境外runner连国内站的
+    老问题)不代表文件坏了, 删掉会让电视上正在用的那个入口 404。
+    """
+    if not repo:
+        return None
+    try:
+        os.makedirs(MIRROR_DIR, exist_ok=True)
+        fn = mirror_fname(url)
+        path = os.path.join(MIRROR_DIR, fn)
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)          # 原子替换: 写一半断电不会留下坏文件
+        log('[镜像转存] %s -> mirror/%s (%d 字节) —— 该源返回的是图片, '
+            '电视读不了原地址' % (as_str(url)[:56], fn,
+                              os.path.getsize(path)))
+        return 'https://cdn.jsdelivr.net/gh/%s@main/mirror/%s' % (repo, fn)
+    except Exception as e:
+        log('[镜像转存失败] %s -> %s: %s (保留上一轮旧文件)' % (
+            as_str(url)[:56], type(e).__name__, e))
+        return None
 
 
 # ---- v10: 广告域名采集 ----
@@ -3064,6 +3141,8 @@ def collect():
     # v12: 25 -> 40。挺好分享多仓一家就 32 个子仓, 25 会漏掉最后 7 个
     SUB_LIMIT = 40
     # v7: norm_store_url / store_fingerprint 已提到模块级(纯函数, 可单测)
+    # v21.1: 每轮归集前清空, 免得同一个进程跑两遍时诊断列表翻倍
+    STORE_DIAG.clear()
 
     def add(api, name, origin):
         api = as_str(api).strip()
@@ -3073,7 +3152,7 @@ def collect():
         if key not in pool:
             pool[key] = {'api': api, 'name': as_str(name), 'origin': origin}
 
-    def add_store(name, url, cfg):
+    def add_store(name, url, cfg, pub_url=None):
         norm = norm_store_url(url)
         if norm in seen_store:
             return False
@@ -3085,9 +3164,13 @@ def collect():
         seen_store.add(norm)
         if fp:
             seen_fingerprint[fp] = (name or url)
-        stores.append({'name': name or urllib.parse.urlparse(url).netloc,
-                       'url': url, 'cfg': cfg,
-                       'kind': store_kind(cfg)})
+        st = {'name': name or urllib.parse.urlparse(url).netloc,
+              'url': url, 'cfg': cfg, 'kind': store_kind(cfg)}
+        # v21.1: pub_url = 写给电视的地址(图片伪装源用它指向转存件);
+        #   留空的都用 url。体检一律用 url —— 我们解得了原地址。
+        if pub_url:
+            st['pub_url'] = pub_url
+        stores.append(st)
         return True
 
     def extract_apis(cfg, origin):
@@ -3161,12 +3244,33 @@ def collect():
             continue
         if line.startswith('@'):
             rest, alias = split_alias(line[1:])
+            # v21.1: 被丢弃的源必须留下记录 —— 详见 STORE_DIAG 处的说明。
+            #   以前这两条出口都只 log 一句就 continue, 报告里什么都不留,
+            #   源是"拉不到"还是"判重复"完全看不出来。
+            diag = {'name': alias or rest, 'url': rest, 'reason': ''}
             try:
                 cfg = fetch_cfg(rest, 15)
             except Exception as e:
+                diag['reason'] = '拉取/解析失败: %s: %s' % (
+                    type(e).__name__, str(e)[:180])
+                STORE_DIAG.append(diag)
                 log('[订阅失败] %s -> %s' % (rest, e))
                 continue
-            if not add_store(alias, rest, cfg):
+            # v21.1: 图片伪装的源 —— 内容转存成普通 JSON 再给电视。
+            #   体检照用原地址(我们知道怎么解), 只有写进清单的地址换成
+            #   jsDelivr 上的转存件(电视不会解图片)。
+            pub = None
+            if IMG_DISGUISE:
+                pub = dump_mirror(rest, cfg,
+                                  os.environ.get('GITHUB_REPOSITORY', ''))
+                if not pub:
+                    diag['reason'] = '返回的是伪装的 JPEG, 且转存失败(保留上一轮文件)'
+                    STORE_DIAG.append(diag)
+                    continue
+            if not add_store(alias, rest, cfg, pub_url=pub):
+                diag['reason'] = ('与已收录的仓重复(地址相同, 或内容指纹相同) '
+                                  '—— 只收一次')
+                STORE_DIAG.append(diag)
                 continue   # v2: 与已收录仓重复, 子仓也无需再跟
             n = extract_apis(cfg, '订阅')
             subs = sub_entries(cfg)[:SUB_LIMIT]
@@ -3502,8 +3606,10 @@ def write_store(scored, repo, live_ok, multi_entries=None, mine_sites=0,
                             round(c['score'] * 100))
         if c['gh'] > 0:
             name += '·G%d' % round(c['gh'] * 100)   # 带 GitHub 依赖的标出来
-        entries.append({'sourceName': name,
-                        'sourceUrl': tv_url(as_str(s.get('url')))})
+        # v21.1: pub_url 写给电视(图片伪装源指向我们转存的纯 JSON),
+        #   url 给检测用 —— 两个地址不一样是有意的, 别再合并回去。
+        out_u = as_str(s.get('pub_url') or s.get('url'))
+        entries.append({'sourceName': name, 'sourceUrl': tv_url(out_u)})
 
     # v13: 多仓格式 storeHouse -> urls。实锤过程(2026-10-28):
     #   同一个仓(挺好分享 thdjk.json), 在 GYCK.json 的 {"urls":[{"url","name"}]}
@@ -3526,7 +3632,8 @@ def write_store(scored, repo, live_ok, multi_entries=None, mine_sites=0,
 
 
 def write_report(items, alive, suspect, deadlist, scored, channels,
-                 up_stats, now, trip='', ad_stats=None):
+                 up_stats, now, trip='', ad_stats=None, diag=None):
+    diag = STORE_DIAG if diag is None else diag
     repo = os.environ.get('GITHUB_REPOSITORY', '')
     lines = ['# TVBox 源检测报告', '', '检测时间: %s (北京时间)' % now, '']
     if trip:
@@ -3632,6 +3739,20 @@ def write_report(items, alive, suspect, deadlist, scored, channels,
                  '>%d%% 直接不收)' % (
                      len(scored), len(kept), len(scored) - len(kept),
                      STORE_TOP_N, round(STORE_GH_MAX * 100)))
+
+    # v21.1: 没能进体检表的源 —— 以前它们只出现在本仓库的日志里(打完就丢),
+    #   报告上看不出"这个源到底还在不在列表里"。饭太硬就这么消失了整整一天:
+    #   看着像被规则淘汰, 其实是拉取那一步就没过。现在每条都写明死在哪一步。
+    if diag:
+        lines += ['', '### 未进入体检表的源 (%d)' % len(diag), '',
+                  '这些源在归集阶段就被丢弃了, 所以上面的体检表里看不到它们 ——'
+                  ' **不是被打分淘汰, 是没能进来**:', '',
+                  '| 源 | 地址 | 原因 |', '|---|---|---|']
+        for d in diag:
+            lines.append('| %s | `%s` | %s |' % (
+                as_str(d.get('name'))[:24], as_str(d.get('url'))[:70],
+                as_str(d.get('reason')).replace('|', '\\|')))
+        lines.append('')
 
     lines += ['', '## 三、高清直播 (live.json, 频道白名单)', '',
                '收录标准: 主线路 ffmpeg拉流实测 >= 720p;'

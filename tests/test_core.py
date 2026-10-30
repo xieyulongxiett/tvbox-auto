@@ -11,6 +11,7 @@
   python tests/test_core.py        # 不依赖 pytest
   pytest -q tests/                 # 装了 pytest 也可以
 """
+import base64
 import importlib.util
 import json
 import os
@@ -1905,6 +1906,155 @@ def test_write_store_excludes_nav_entry():
     finally:
         cs.STORE = old
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _fake_img(note=b''):
+    """拼一个"伪装成 JPEG 的配置响应", 结构与饭太硬线上一致:
+
+      图片字节 + \\xff\\xd9(EOI) + 干扰串**base64(JSON)
+    """
+    cfg = {'sites': [{'name': '测试站', 'type': 3, 'api': 'csp_Test'}],
+           'spider': 'https://cdn.example.com/x.jpg;md5;deadbeef'}
+    b64 = base64.b64encode(
+        json.dumps(cfg, ensure_ascii=False).encode('utf-8')).decode()
+    return (b'\xff\xd8\xff\xe0\x00\x10JFIF' + note + b'\xff\xd9'
+            + ('ij**' + b64).encode())
+
+
+def _with_http_get(data):
+    """临时替换 http_get, 让 fetch_json 走本地假数据(不联网)"""
+    old = cs.http_get
+    cs.http_get = lambda url, timeout, max_bytes=None, headers=None: (200, data)
+    return old
+
+
+def test_fetch_json_decodes_image_disguise():
+    """v21.1: 图片藏配置要解得出来, 并且要**标记出来**
+
+    饭太硬 5 个域名(http://www.饭太硬.net/tv 等)全都返回同一张 JPEG,
+    真实配置 base64 藏在图片字节里。解得出来才有后面的体检和转存。
+    IMG_DISGUISE 是决定是否转存的唯一依据 —— 它漏了, 电视端就还是空的。
+    """
+    old = _with_http_get(_fake_img())
+    try:
+        cs.IMG_DISGUISE = False
+        cfg = cs.fetch_json('http://x.example/tv', 5)
+        assert cs.IMG_DISGUISE is True, '解出来了却没标记, 就不会触发转存'
+        assert len(cfg.get('sites') or []) == 1, cfg
+        # 幂等: 同一个响应反复解结果一致(脚本里会被多个阶段各拉一次)
+        cfg2 = cs.fetch_json('http://x.example/tv', 5)
+        assert cfg == cfg2
+    finally:
+        cs.http_get = old
+
+
+def test_fetch_json_raises_on_plain_image():
+    """v21.1: 是张图又解不出内容时, 必须**报错且说清是图片**
+
+    改之前这里是 `except: pass`, 一路走到底层的"配置无法解析" ——
+    跟"源挂了"长得一模一样。饭太硬就这么在报告里消失了一整天,
+    看着像被规则淘汰, 其实是响应体是张图。
+    """
+    old = _with_http_get(b'\xff\xd8\xff\xe0\x00\x10JFIF' + b'\x00' * 800
+                         + b'\xff\xd9')
+    try:
+        try:
+            cs.fetch_json('http://x.example/tv', 5)
+            raise AssertionError('纯图片居然没报错')
+        except RuntimeError as e:
+            assert '图片' in str(e), str(e)
+    finally:
+        cs.http_get = old
+
+
+def test_dump_mirror_writes_and_keeps_old():
+    """v21.1: 转存成功要写出文件; 转存失败**不能动旧文件**
+
+    "失败保留旧文件"是硬要求: 某轮拉不到上游(境外 runner 连国内站的老问题)
+    不代表已存的配置坏了, 删掉会让电视上正在用的入口直接 404。
+    """
+    tmp = tempfile.mkdtemp()
+    old_dir = cs.MIRROR_DIR
+    try:
+        cs.MIRROR_DIR = os.path.join(tmp, 'mirror')
+        cfg = {'sites': [{'name': 'A', 'type': 3, 'api': 'csp_A'}]}
+        url = cs.dump_mirror('http://www.饭太硬.net/tv', cfg, 'owner/repo')
+        assert url and url.startswith('https://cdn.jsdelivr.net/gh/owner/repo@main/mirror/'), url
+        fn = os.path.join(cs.MIRROR_DIR, cs.mirror_fname('http://www.饭太硬.net/tv'))
+        assert os.path.exists(fn)
+        with open(fn, encoding='utf-8') as f:
+            saved = json.load(f)
+        assert saved['sites'][0]['api'] == 'csp_A'
+        # 没有 repo 时不写任何东西(本机跑不会误生成)
+        assert cs.dump_mirror('http://x/y', cfg, '') is None
+
+        # 失败场景: 塞个不可序列化的对象进去
+        before = open(fn, encoding='utf-8').read()
+        assert cs.dump_mirror('http://www.饭太硬.net/tv',
+                              {'sites': object()}, 'owner/repo') is None
+        assert open(fn, encoding='utf-8').read() == before, '旧文件被覆盖了'
+        # 同一地址必须落在同一文件名上, 否则每天会攒出一堆副本
+        assert cs.mirror_fname('http://www.饭太硬.net/tv') == \
+            cs.mirror_fname('http://www.饭太硬.net/tv')
+    finally:
+        cs.MIRROR_DIR = old_dir
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_write_store_prefers_pub_url():
+    """v21.1: 有 pub_url 时写给电视的必须是它, 检测仍用 url
+
+    两个地址不一样是有意的: pub_url 是 JS 图片转存出来的纯 JSON(jsDelivr),
+    url 是原始那个返回图片的地址(我们解得了, 电视解不了)。
+    合并回同一个 = 电视端立刻失效。
+    """
+    tmp = tempfile.mkdtemp()
+    old = cs.STORE
+    try:
+        cs.STORE = os.path.join(tmp, 'store.json')
+        scored = [{'url': 'http://www.饭太硬.net/tv', 'name': '饭太硬',
+                   'pub_url': 'https://cdn.jsdelivr.net/gh/o/r@main/mirror/m-abcd.json',
+                   'kind': 'store', 'score': 1.0, 'state': '保留',
+                   'alive': 48, 'total': 48, 'gh_rate': 0.0,
+                   'sites_n': 48, 'jar_rate': 1.0, 'vod_ratio': 0.41}]
+        cs.write_store(scored, '', True, [])
+        cfg = json.load(open(cs.STORE, encoding='utf-8'))
+        got = [e['url'] for e in cfg['urls']]
+        assert any('jsdelivr' in u for u in got), got
+        assert not any('sss604efuw' in u for u in got), '原图片地址漏给了电视: %s' % got
+    finally:
+        cs.STORE = old
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_write_report_lists_dropped_sources():
+    """v21.1: 没进体检表的源要单独列一节, 写明死在哪一步
+
+    归集阶段被丢弃的源, 以前只在云端日志里留一句 —— 本机看不到, 报告里也没有,
+    于是"这个源还在不在列表里"只能靠猜。每条都要能看到原因。
+    """
+    diag = [{'name': '饭太硬', 'url': 'http://www.饭太硬.net/tv',
+             'reason': '拉取/解析失败: RuntimeError: 返回的是一张图片(20023 字节 JPEG)'}]
+    cs.write_report([], [], [], [], [], [], {}, '2026-10-30 12:00', diag=diag)
+    # write_report 内部写文件, 这里读回来核验
+    rep = open(cs.REPORT, encoding='utf-8').read()
+    assert '未进入体检表的源' in rep, '被丢弃的源没在报告里露面'
+    assert '饭太硬' in rep
+    assert '20023 字节' in rep, '原因没写进去, 下次还是得从头查'
+
+
+def test_store_min_health_admits_lightconer():
+    """v21.1: 门槛 0.85 —— Lightconer 实测 467/516 = 90.5%? 实际 85% 要能过
+
+    报告实测值: Lightconer单仓聚合 85%(467/516)。它 305 个 GitHub 子资源在
+    境外 runner 上全部可达, 死的 49 个是非 GH 站点 —— 典型的"境外连不上国内
+    资源", 而用户看电视在湖南移动宽带, 恰好是反过来的。这条守护别再退回去。
+    """
+    assert cs.STORE_MIN_HEALTH <= 0.85, \
+        '门槛退回 %.2f 会把 Lightconer(85%%)重新挤出去' % cs.STORE_MIN_HEALTH
+    # 0.85 这条线的现实意义: 下面这些已知打不开的仓必须仍然进不来
+    for score in (0.0, 0.11, 0.71):
+        assert score < cs.STORE_MIN_HEALTH
 
 
 def _run_all():
