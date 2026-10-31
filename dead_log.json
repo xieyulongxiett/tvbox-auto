@@ -1,23 +1,27 @@
 {
  "apis": {
   "https://cdn.jsdmirror.com/gh/ouhaibo1980/tvbox@main/py/py_douban.py": {
-   "fails": 3,
-   "last_fail": "2026-10-30 14:24",
-   "reason": "HTTP Error 521: Connection Reset by Origin Server"
+   "fails": 4,
+   "last_fail": "2026-10-31 08:21",
+   "reason": "HTTP Error 400: Bad Request"
   },
   "https://rose.tvdog.top/51chigua.py": {
-   "fails": 24,
-   "last_fail": "2026-10-30 14:24",
+   "fails": 25,
+   "last_fail": "2026-10-31 08:21",
    "reason": "配置无法解析: https://rose.tvdog.top/51chigua.py?ac=list"
   }
  },
  "stores": {
   "http://47.96.82.41:5188/rose/18/xgg.json": {
-   "last_fail": "2026-10-30 14:24",
-   "score": 0.69
+   "last_fail": "2026-10-31 08:21",
+   "score": 0.72
+  },
+  "http://home.jundie.top:81/top98.json": {
+   "last_fail": "2026-10-31 08:21",
+   "score": 0
   },
   "http://xhztv.top/4k.json": {
-   "last_fail": "2026-10-30 14:24",
+   "last_fail": "2026-10-31 08:21",
    "score": 0.13
   }
  }
