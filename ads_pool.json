@@ -2,8 +2,8 @@
  "enabled": false,
  "min_votes": 2,
  "consensus": [
-  "static-mozai.4gtv.tv",
-  "mozai.4gtv.tv"
+  "mozai.4gtv.tv",
+  "static-mozai.4gtv.tv"
  ],
  "single": [
   "ae01.alicdn.com",
