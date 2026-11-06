@@ -1,27 +1,27 @@
 {
  "apis": {
   "https://cdn.jsdmirror.com/gh/ouhaibo1980/tvbox@main/py/py_douban.py": {
-   "fails": 9,
-   "last_fail": "2026-11-05 09:17",
-   "reason": "HTTP Error 400: Bad Request"
+   "fails": 10,
+   "last_fail": "2026-11-06 09:22",
+   "reason": "HTTP Error 404: Not Found"
   },
   "https://rose.tvdog.top/51chigua.py": {
-   "fails": 30,
-   "last_fail": "2026-11-05 09:17",
+   "fails": 31,
+   "last_fail": "2026-11-06 09:22",
    "reason": "配置无法解析: https://rose.tvdog.top/51chigua.py?ac=list"
   }
  },
  "stores": {
   "http://47.96.82.41:5188/rose/18/xgg.json": {
-   "last_fail": "2026-11-05 09:17",
+   "last_fail": "2026-11-06 09:22",
    "score": 0.72
   },
   "http://home.jundie.top:81/top98.json": {
-   "last_fail": "2026-11-05 09:17",
+   "last_fail": "2026-11-06 09:22",
    "score": 0
   },
   "http://xhztv.top/4k.json": {
-   "last_fail": "2026-11-05 09:17",
+   "last_fail": "2026-11-06 09:22",
    "score": 0.13
   }
  }
