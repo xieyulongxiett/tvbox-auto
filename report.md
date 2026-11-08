@@ -1,13 +1,13 @@
 # TVBox 源检测报告
 
-检测时间: 2026-11-07 08:36 (北京时间)
+检测时间: 2026-11-08 08:11 (北京时间)
 
 ## 一、直链接口检测 (tvbox.json)
 
 | 状态 | 名称 | 接口 | 延迟 | 说明 |
 |---|---|---|---|---|
-| 剔除 | 📢接口软件永远免费 | `https://cdn.jsdmirror.com/gh/ouhaibo1980/tvbox@main/py/py_douban.py` | - | 连续失败 11 次: HTTP Error 404: Not Found |
-| 剔除 | 🧿我要┃吃瓜 | `https://rose.tvdog.top/51chigua.py` | - | 连续失败 32 次: 配置无法解析: https://rose.tvdog.top/51chigua.py?ac=list |
+| 剔除 | 📢接口软件永远免费 | `https://cdn.jsdmirror.com/gh/ouhaibo1980/tvbox@main/py/py_douban.py` | - | 连续失败 12 次: HTTP Error 404: Not Found |
+| 剔除 | 🧿我要┃吃瓜 | `https://rose.tvdog.top/51chigua.py` | - | 连续失败 33 次: 配置无法解析: https://rose.tvdog.top/51chigua.py?ac=list |
 
 接口归集 2 | 存活 0 | 疑似 0 | 剔除 2
 
