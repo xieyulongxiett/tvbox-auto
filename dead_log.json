@@ -1,18 +1,18 @@
 {
  "apis": {
   "https://cdn.jsdmirror.com/gh/ouhaibo1980/tvbox@main/py/py_douban.py": {
-   "fails": 21,
-   "last_fail": "2026-11-17 11:24",
+   "fails": 22,
+   "last_fail": "2026-11-18 10:44",
    "reason": "HTTP Error 404: Not Found"
   }
  },
  "stores": {
   "http://home.jundie.top:81/top98.json": {
-   "last_fail": "2026-11-17 11:24",
+   "last_fail": "2026-11-18 10:44",
    "score": 0
   },
   "http://xhztv.top/4k.json": {
-   "last_fail": "2026-11-17 11:24",
+   "last_fail": "2026-11-18 10:44",
    "score": 0.13
   }
  }
