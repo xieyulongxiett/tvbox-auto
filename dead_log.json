@@ -1,23 +1,19 @@
 {
  "apis": {
   "https://cdn.jsdmirror.com/gh/ouhaibo1980/tvbox@main/py/py_douban.py": {
-   "fails": 26,
-   "last_fail": "2026-11-22 08:54",
+   "fails": 27,
+   "last_fail": "2026-11-23 09:23",
    "reason": "HTTP Error 404: Not Found"
   }
  },
  "stores": {
   "http://home.jundie.top:81/top98.json": {
-   "last_fail": "2026-11-22 08:54",
+   "last_fail": "2026-11-23 09:23",
    "score": 0
   },
   "http://xhztv.top/4k.json": {
-   "last_fail": "2026-11-22 08:54",
-   "score": 0.11
-  },
-  "https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/%E5%8D%95%E4%BB%93%E8%81%9A%E5%90%88.json": {
-   "last_fail": "2026-11-22 08:54",
-   "score": 0.03
+   "last_fail": "2026-11-23 09:23",
+   "score": 0.13
   }
  }
 }
