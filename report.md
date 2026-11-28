@@ -1,12 +1,12 @@
 # TVBox 源检测报告
 
-检测时间: 2026-11-27 11:29 (北京时间)
+检测时间: 2026-11-28 11:04 (北京时间)
 
 ## 一、直链接口检测 (tvbox.json)
 
 | 状态 | 名称 | 接口 | 延迟 | 说明 |
 |---|---|---|---|---|
-| 剔除 | 📢接口软件永远免费 | `https://cdn.jsdmirror.com/gh/ouhaibo1980/tvbox@main/py/py_douban.py` | - | 连续失败 31 次: HTTP Error 404: Not Found |
+| 剔除 | 📢接口软件永远免费 | `https://cdn.jsdmirror.com/gh/ouhaibo1980/tvbox@main/py/py_douban.py` | - | 连续失败 32 次: HTTP Error 404: Not Found |
 
 接口归集 1 | 存活 0 | 疑似 0 | 剔除 1
 
